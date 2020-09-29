@@ -18,6 +18,9 @@ import os
 import collections
 import random
 from multiprocessing import Pool
+
+import numpy as np
+
 import tokenization
 import tensorflow as tf
 
@@ -44,6 +47,8 @@ flags.DEFINE_bool(
     "do_whole_word_mask", False,
     "Whether to use whole word masking rather than per-WordPiece masking.")
 
+flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
+
 flags.DEFINE_integer("max_seq_length", 512, "Maximum sequence length.")
 
 flags.DEFINE_integer("max_predictions_per_seq", 80,
@@ -59,8 +64,12 @@ flags.DEFINE_integer(
 
 flags.DEFINE_float("masked_lm_prob", 0.15, "Masked LM probability.")
 
+flags.DEFINE_float("geometric_masking_p", 0.0, "The p for geometric distribution for span masking.")
+flags.DEFINE_integer("max_span_length", 10, "Maximum span length to mask")
+
 flags.DEFINE_bool("verbose", False, "verbose")
 
+SPECIAL_TOKENS = {'[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '[SPAN_MASK]'}
 
 class TrainingInstance(object):
     """A single training instance (sentence pair)."""
@@ -94,11 +103,14 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
 
     writer_index = 0
 
-    total_written = 0
+    total_written, total_tokens_written = 0, 0
     for (inst_index, instance) in enumerate(instances):
+        # if inst_index % 1000 == 0:
+        #     tf.logging.info(f"written {inst_index}")
         input_ids = tokenizer.convert_tokens_to_ids(instance.tokens)
-        input_mask = [1] * len(input_ids)
-        assert len(input_ids) <= max_seq_length
+        input_len = len(input_ids)
+        input_mask = [1] * input_len
+        assert input_len <= max_seq_length
 
         while len(input_ids) < max_seq_length:
             input_ids.append(0)
@@ -129,6 +141,7 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         writer_index = (writer_index + 1) % len(writers)
 
         total_written += 1
+        total_tokens_written += input_len
 
         if FLAGS.verbose and inst_index < 20:
             tf.logging.info("*** Example ***")
@@ -148,7 +161,7 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
     for writer in writers:
         writer.close()
 
-    tf.logging.info("Wrote %d total instances", total_written)
+    tf.logging.info(f"Wrote {total_written} total instances, average length is {total_tokens_written // total_written}")
 
 
 def create_int_feature(values):
@@ -163,7 +176,7 @@ def create_float_feature(values):
 
 def create_training_instances(input_file, tokenizer, max_seq_length,
                               dupe_factor, masked_lm_prob,
-                              max_predictions_per_seq, rng):
+                              max_predictions_per_seq, rng, length_dist=None, lengths=None):
     """Create `TrainingInstance`s from raw text."""
     all_documents = [[]]
 
@@ -173,6 +186,9 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
     with tf.gfile.GFile(input_file, "r") as reader:
         expect_title = False
         for i, line in enumerate(reader):
+            # if i % 1000 == 0:
+            #     tf.logging.info(f"read {i}")
+
             line = tokenization.convert_to_unicode(line).strip()
 
             if (not line) or line.startswith("</doc"):
@@ -199,24 +215,31 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
     instances = []
     for dupe_idx in range(dupe_factor):
         for document_index in range(len(all_documents)):
+            # if document_index % 100 == 0:
+            #     tf.logging.info(f"processed {document_index}")
             instances.extend(
                 create_instances_from_document(
                     all_documents, document_index, max_seq_length,
-                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx))
+                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx, length_dist, lengths))
 
     rng.shuffle(instances)
     return instances
 
 
-def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_seq, vocab_words, rng):
+def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_seq, vocab_words, rng, length_dist=None, lengths=None):
     tokens = ["[CLS]"]
     for segment in segments:
         tokens += segment
     tokens.append("[SEP]")
 
-    (tokens, masked_lm_positions,
-     masked_lm_labels) = create_masked_lm_predictions(
-        tokens, masked_lm_prob, max_predictions_per_seq, vocab_words, rng)
+    if FLAGS.geometric_masking_p > 0:
+        tokens, masked_lm_positions, masked_lm_labels = \
+            create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, lengths, [],
+                                                   max_predictions_per_seq, vocab_words, rng)
+    else:
+        tokens, masked_lm_positions, masked_lm_labels = \
+            create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq, vocab_words, rng)
+
     return TrainingInstance(tokens=tokens,
                             masked_lm_positions=masked_lm_positions,
                             masked_lm_labels=masked_lm_labels)
@@ -224,7 +247,7 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
 
 def create_instances_from_document(
         all_documents, document_index, max_seq_length, masked_lm_prob, max_predictions_per_seq, vocab_words, rng,
-        dupe_idx):
+        dupe_idx, length_dist=None, lengths=None):
     """Creates `TrainingInstance`s for a single document."""
     document = all_documents[document_index]
 
@@ -240,7 +263,7 @@ def create_instances_from_document(
         if current_length + segment_len > max_num_tokens or i % len(document) == dupe_idx:
             if current_chunk:
                 instance = create_instance_from_context(current_chunk, masked_lm_prob,
-                                                        max_predictions_per_seq, vocab_words, rng)
+                                                        max_predictions_per_seq, vocab_words, rng, length_dist, lengths)
                 instances.append(instance)
 
             current_chunk, current_length = [], 0
@@ -257,7 +280,7 @@ def create_instances_from_document(
 
     if current_chunk:
         instance = create_instance_from_context(current_chunk, masked_lm_prob,
-                                                max_predictions_per_seq, vocab_words, rng)
+                                                max_predictions_per_seq, vocab_words, rng, length_dist, lengths)
         instances.append(instance)
 
     return instances
@@ -267,9 +290,85 @@ MaskedLmInstance = collections.namedtuple("MaskedLmInstance",
                                           ["index", "label"])
 
 
+def mask_tokens(output_tokens, start_index, end_index, vocab_words, rng):
+    # 80% of the time, replace with [MASK]
+    if rng.random() < 0.8:
+        for idx in range(start_index, end_index+1):
+            output_tokens[idx] = "[MASK]"
+    else:
+        # 10% of the time, replace with random word
+        if rng.random() < 0.5:
+            for idx in range(start_index, end_index + 1):
+                output_tokens[idx] = vocab_words[rng.randint(0, len(vocab_words) - 1)]
+
+
+def create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, lengths, already_masked,
+                                           max_predictions_per_seq, vocab_words, rng):
+    """Creates the predictions for geometric objective."""
+    output_tokens = list(tokens)
+
+    candidates_for_start, candidates_for_end, candidates_for_mask = \
+        [False] * len(output_tokens), [False] * len(output_tokens), [False] * len(output_tokens)
+    for i, token in enumerate(output_tokens):
+        # if attention_mask[i] and token not in SPECIAL_TOKENS:
+        if token not in SPECIAL_TOKENS:
+            candidates_for_mask[i] = True
+            candidates_for_start[i] = (not token.startswith("##"))
+            candidates_for_end[i] = (
+                    i == len(output_tokens) - 1 or not output_tokens[i + 1].startswith("##"))
+    if sum(candidates_for_start) < 0.5 * len(output_tokens):
+        # logger.info("An example with too many OOV words, skipping on geometric masking")
+        candidates_for_start = candidates_for_mask
+        candidates_for_end = candidates_for_mask
+
+    num_predictions = len(already_masked)
+    num_tokens_to_mask = int(masked_lm_prob * sum(candidates_for_mask))
+    num_tokens_to_mask = min(max_predictions_per_seq - num_predictions, num_tokens_to_mask)
+
+    len_dist = list(length_dist)
+    masked_lms = []
+    while num_predictions < num_tokens_to_mask:
+        span_len_idx = np.random.choice(range(len(len_dist)), p=len_dist)
+        span_len = lengths[span_len_idx]
+        if num_predictions + span_len <= num_tokens_to_mask:
+            num_attempts = 0
+            max_attempts = 30
+            while num_attempts < max_attempts:
+                start_idx = np.random.randint(len(output_tokens) - span_len + 1)
+                end_idx = start_idx + span_len - 1
+                if candidates_for_start[start_idx] and candidates_for_end[end_idx] \
+                        and all(candidates_for_mask[j] for j in range(start_idx, end_idx + 1)):
+                    for j in range(start_idx, end_idx + 1):
+                        candidates_for_start[j] = False
+                        candidates_for_end[j] = False
+                        candidates_for_mask[j] = False
+                        masked_lms.append(MaskedLmInstance(index=j, label=output_tokens[j]))
+
+                        num_predictions += 1
+                    mask_tokens(output_tokens, start_idx, end_idx, vocab_words, rng)
+                    break
+                num_attempts += 1
+            if num_attempts == max_attempts:
+                # print(f"Maximum attempts for span length {span_len}. Skipping geometric masking")
+                candidates_for_start = candidates_for_mask
+                candidates_for_end = candidates_for_mask
+
+    assert len(masked_lms) <= num_tokens_to_mask
+    masked_lms = sorted(masked_lms, key=lambda x: x.index)
+
+    masked_lm_positions = []
+    masked_lm_labels = []
+    for p in masked_lms:
+        masked_lm_positions.append(p.index)
+        masked_lm_labels.append(p.label)
+
+    return (output_tokens, masked_lm_positions, masked_lm_labels)
+
 def create_masked_lm_predictions(tokens, masked_lm_prob,
                                  max_predictions_per_seq, vocab_words, rng):
     """Creates the predictions for the masked LM objective."""
+
+    assert 0 < len(tokens) <= 512, str(len(tokens))
 
     cand_indexes = []
     for (i, token) in enumerate(tokens):
@@ -315,22 +414,9 @@ def create_masked_lm_predictions(tokens, masked_lm_prob,
             continue
         for index in index_set:
             covered_indexes.add(index)
-
-            masked_token = None
-            # 80% of the time, replace with [MASK]
-            if rng.random() < 0.8:
-                masked_token = "[MASK]"
-            else:
-                # 10% of the time, keep original
-                if rng.random() < 0.5:
-                    masked_token = tokens[index]
-                # 10% of the time, replace with random word
-                else:
-                    masked_token = vocab_words[rng.randint(0, len(vocab_words) - 1)]
-
-            output_tokens[index] = masked_token
-
+            mask_tokens(output_tokens, index, index, vocab_words, rng)
             masked_lms.append(MaskedLmInstance(index=index, label=tokens[index]))
+
     assert len(masked_lms) <= num_to_predict
     masked_lms = sorted(masked_lms, key=lambda x: x.index)
 
@@ -343,13 +429,13 @@ def create_masked_lm_predictions(tokens, masked_lm_prob,
     return (output_tokens, masked_lm_positions, masked_lm_labels)
 
 
-def process_file(input_file, output_file, tokenizer, rng):
+def process_file(input_file, output_file, tokenizer, rng, length_dist=None, lengths=None):
     tf.logging.info(f"*** Started processing file {input_file} ***")
 
     instances = create_training_instances(
         input_file, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
         FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
-        rng)
+        rng, length_dist, lengths)
 
     tf.logging.info(f"*** Finished processing file {input_file}, writing to output file {output_file} ***")
 
@@ -383,7 +469,16 @@ def main(_):
 
     rng = random.Random(FLAGS.random_seed)
 
-    params = [(file, get_output_file(file, FLAGS.output_dir), tokenizer, rng) for file in input_files]
+    length_dist, lengths = None, None
+    if FLAGS.geometric_masking_p > 0:
+        p = FLAGS.geometric_masking_p
+        lower, upper = 1, FLAGS.max_span_length
+        lengths = list(range(lower, upper + 1))
+        length_dist = [p * (1 - p) ** (i - lower) for i in range(lower, upper + 1)] if p >= 0 else None
+        length_dist = [x / (sum(length_dist)) for x in length_dist]
+
+    params = [(file, get_output_file(file, FLAGS.output_dir), tokenizer, rng, length_dist, lengths)
+              for file in input_files]
     with Pool(FLAGS.num_processes if FLAGS.num_processes else None) as p:
         p.starmap(process_file, params)
 
