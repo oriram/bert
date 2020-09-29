@@ -260,8 +260,9 @@ def create_instances_from_document(
     for i, segment in enumerate(document):
         segment_len = len(segment)
 
-        if current_length + segment_len > max_num_tokens or i % len(document) == dupe_idx:
+        if current_length + segment_len > max_num_tokens or (len(document) >= 10 and i % len(document) == dupe_idx):
             if current_chunk:
+                current_chunk.append(segment[:max_num_tokens-current_length])
                 instance = create_instance_from_context(current_chunk, masked_lm_prob,
                                                         max_predictions_per_seq, vocab_words, rng, length_dist, lengths)
                 instances.append(instance)
