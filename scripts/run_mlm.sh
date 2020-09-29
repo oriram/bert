@@ -1,7 +1,7 @@
 python run_pretraining.py \
 --bert_config_file=configs/bert-base-cased-config.json \
 --input_file=gs://span-pretraining/data/mlm_tfrecords/* \
---output_dir=gs://span-pretraining/model_outputs/mlm/* \
+--output_dir=gs://span-pretraining/model_outputs/mlm \
 --max_seq_length=512 \
 --max_predictions_per_seq=80 \
 --do_train \
