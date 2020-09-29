@@ -1,0 +1,11 @@
+python create_pretraining_data.py \
+--input_file=../data/wiki/text/*/*wiki* \
+--output_dir=gs://span-pretraining/data/mlm_tfrecords \
+--vocab_file=bert-cased-vocab.txt \
+--do_lower_case=False \
+--do_whole_word_mask=False \
+--max_seq_length=512 \
+--max_predictions_per_seq=80 \
+--num_processes=63 \
+--masked_lm_prob=0.15 \
+--dupe_factor=5
