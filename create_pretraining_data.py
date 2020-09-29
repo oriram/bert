@@ -59,6 +59,8 @@ flags.DEFINE_integer(
 
 flags.DEFINE_float("masked_lm_prob", 0.15, "Masked LM probability.")
 
+flags.DEFINE_bool("verbose", False)
+
 
 class TrainingInstance(object):
     """A single training instance (sentence pair)."""
@@ -128,7 +130,7 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
 
         total_written += 1
 
-        if inst_index < 20:
+        if FLAGS.verbose and inst_index < 20:
             tf.logging.info("*** Example ***")
             tf.logging.info("tokens: %s" % " ".join(
                 [tokenization.printable_text(x) for x in instance.tokens]))
