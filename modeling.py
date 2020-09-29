@@ -41,7 +41,6 @@ class BertConfig(object):
                  hidden_dropout_prob=0.1,
                  attention_probs_dropout_prob=0.1,
                  max_position_embeddings=512,
-                 type_vocab_size=16,
                  initializer_range=0.02):
         """Constructs BertConfig.
 
@@ -62,8 +61,6 @@ class BertConfig(object):
           max_position_embeddings: The maximum sequence length that this model might
             ever be used with. Typically set this to something large just in case
             (e.g., 512 or 1024 or 2048).
-          type_vocab_size: The vocabulary size of the `token_type_ids` passed into
-            `BertModel`.
           initializer_range: The stdev of the truncated_normal_initializer for
             initializing all weight matrices.
         """
@@ -76,7 +73,6 @@ class BertConfig(object):
         self.hidden_dropout_prob = hidden_dropout_prob
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.max_position_embeddings = max_position_embeddings
-        self.type_vocab_size = type_vocab_size
         self.initializer_range = initializer_range
 
     @classmethod
@@ -113,13 +109,12 @@ class BertModel(object):
     # Already been converted into WordPiece token ids
     input_ids = tf.constant([[31, 51, 99], [15, 5, 0]])
     input_mask = tf.constant([[1, 1, 1], [1, 1, 0]])
-    token_type_ids = tf.constant([[0, 0, 1], [0, 2, 0]])
 
     config = modeling.BertConfig(vocab_size=32000, hidden_size=512,
       num_hidden_layers=8, num_attention_heads=6, intermediate_size=1024)
 
     model = modeling.BertModel(config=config, is_training=True,
-      input_ids=input_ids, input_mask=input_mask, token_type_ids=token_type_ids)
+      input_ids=input_ids, input_mask=input_mask)
 
     label_embeddings = tf.get_variable(...)
     pooled_output = model.get_pooled_output()
@@ -133,7 +128,6 @@ class BertModel(object):
                  is_training,
                  input_ids,
                  input_mask=None,
-                 token_type_ids=None,
                  use_one_hot_embeddings=False,
                  scope=None):
         """Constructor for BertModel.
@@ -144,7 +138,6 @@ class BertModel(object):
             whether dropout will be applied.
           input_ids: int32 Tensor of shape [batch_size, seq_length].
           input_mask: (optional) int32 Tensor of shape [batch_size, seq_length].
-          token_type_ids: (optional) int32 Tensor of shape [batch_size, seq_length].
           use_one_hot_embeddings: (optional) bool. Whether to use one-hot word
             embeddings or tf.embedding_lookup() for the word embeddings.
           scope: (optional) variable scope. Defaults to "bert".
@@ -165,9 +158,6 @@ class BertModel(object):
         if input_mask is None:
             input_mask = tf.ones(shape=[batch_size, seq_length], dtype=tf.int32)
 
-        if token_type_ids is None:
-            token_type_ids = tf.zeros(shape=[batch_size, seq_length], dtype=tf.int32)
-
         with tf.variable_scope(scope, default_name="bert"):
             with tf.variable_scope("embeddings"):
                 # Perform embedding lookup on the word ids.
@@ -179,14 +169,9 @@ class BertModel(object):
                     word_embedding_name="word_embeddings",
                     use_one_hot_embeddings=use_one_hot_embeddings)
 
-                # Add positional embeddings and token type embeddings, then layer
-                # normalize and perform dropout.
+                # Add positional embeddings, then layer normalize and perform dropout.
                 self.embedding_output = embedding_postprocessor(
                     input_tensor=self.embedding_output,
-                    use_token_type=True,
-                    token_type_ids=token_type_ids,
-                    token_type_vocab_size=config.type_vocab_size,
-                    token_type_embedding_name="token_type_embeddings",
                     use_position_embeddings=True,
                     position_embedding_name="position_embeddings",
                     initializer_range=config.initializer_range,
@@ -252,7 +237,7 @@ class BertModel(object):
         Returns:
           float Tensor of shape [batch_size, seq_length, hidden_size] corresponding
           to the output of the embedding layer, after summing the word
-          embeddings with the positional embeddings and the token type embeddings,
+          embeddings with the positional embeddings,
           then performing layer normalization. This is the input to the transformer.
         """
         return self.embedding_output
@@ -426,10 +411,6 @@ def embedding_lookup(input_ids,
 
 
 def embedding_postprocessor(input_tensor,
-                            use_token_type=False,
-                            token_type_ids=None,
-                            token_type_vocab_size=16,
-                            token_type_embedding_name="token_type_embeddings",
                             use_position_embeddings=True,
                             position_embedding_name="position_embeddings",
                             initializer_range=0.02,
@@ -440,12 +421,6 @@ def embedding_postprocessor(input_tensor,
     Args:
       input_tensor: float Tensor of shape [batch_size, seq_length,
         embedding_size].
-      use_token_type: bool. Whether to add embeddings for `token_type_ids`.
-      token_type_ids: (optional) int32 Tensor of shape [batch_size, seq_length].
-        Must be specified if `use_token_type` is True.
-      token_type_vocab_size: int. The vocabulary size of `token_type_ids`.
-      token_type_embedding_name: string. The name of the embedding table variable
-        for token type ids.
       use_position_embeddings: bool. Whether to add position embeddings for the
         position of each token in the sequence.
       position_embedding_name: string. The name of the embedding table variable
@@ -468,23 +443,6 @@ def embedding_postprocessor(input_tensor,
     width = input_shape[2]
 
     output = input_tensor
-
-    if use_token_type:
-        if token_type_ids is None:
-            raise ValueError("`token_type_ids` must be specified if"
-                             "`use_token_type` is True.")
-        token_type_table = tf.get_variable(
-            name=token_type_embedding_name,
-            shape=[token_type_vocab_size, width],
-            initializer=create_initializer(initializer_range))
-        # This vocab will be small so we always do one-hot here, since it is always
-        # faster for a small vocabulary.
-        flat_token_type_ids = tf.reshape(token_type_ids, [-1])
-        one_hot_ids = tf.one_hot(flat_token_type_ids, depth=token_type_vocab_size)
-        token_type_embeddings = tf.matmul(one_hot_ids, token_type_table)
-        token_type_embeddings = tf.reshape(token_type_embeddings,
-                                           [batch_size, seq_length, width])
-        output += token_type_embeddings
 
     if use_position_embeddings:
         assert_op = tf.assert_less_equal(seq_length, max_position_embeddings)
