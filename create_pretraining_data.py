@@ -59,7 +59,7 @@ flags.DEFINE_integer(
 
 flags.DEFINE_float("masked_lm_prob", 0.15, "Masked LM probability.")
 
-flags.DEFINE_bool("verbose", False)
+flags.DEFINE_bool("verbose", False, "verbose")
 
 
 class TrainingInstance(object):
