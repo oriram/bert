@@ -171,11 +171,8 @@ def create_training_instances(input_files, tokenizer, max_seq_length,
     for input_file in input_files:
         with tf.gfile.GFile(input_file, "r") as reader:
             expect_title = False
-            while True:
-                line = tokenization.convert_to_unicode(reader.readline())
-                if not line:
-                    break
-                line = line.strip()
+            for i, line in enumerate(reader):
+                line = tokenization.convert_to_unicode(line).strip()
 
                 if (not line) or line.startswith("</doc"):
                     continue
@@ -235,9 +232,7 @@ def create_instances_from_document(
     instances = []
     current_chunk = []
     current_length = 0
-    i = 0
-    while i < len(document):
-        segment = document[i]
+    for segment in document:
         segment_len = len(segment)
 
         if current_length + segment_len > max_num_tokens:
@@ -250,14 +245,13 @@ def create_instances_from_document(
             if segment_len > max_num_tokens:
                 # If this segment is too long, take the first max_num_tokens from this segment
                 segment = segment[:max_num_tokens]
-                instance = create_instance_from_context(segment, masked_lm_prob,
+                instance = create_instance_from_context([segment], masked_lm_prob,
                                                         max_predictions_per_seq, vocab_words, rng)
                 instances.append(instance)
                 continue
 
         current_chunk.append(segment)
         current_length += len(segment)
-        i += 1
 
     if current_chunk:
         instance = create_instance_from_context(current_chunk, masked_lm_prob,
