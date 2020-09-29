@@ -14,12 +14,10 @@
 # limitations under the License.
 """Create masked LM/next sentence masked_lm TF examples for BERT."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import os
 import collections
 import random
+from multiprocessing import Pool
 import tokenization
 import tensorflow as tf
 
@@ -31,8 +29,8 @@ flags.DEFINE_string("input_file", None,
                     "Input raw text file (or comma-separated list of files).")
 
 flags.DEFINE_string(
-    "output_file", None,
-    "Output TF example file (or comma-separated list of files).")
+    "output_dir", None,
+    "Output TF example directory.")
 
 flags.DEFINE_string("vocab_file", None,
                     "The vocabulary file that the BERT model was trained on.")
@@ -52,6 +50,8 @@ flags.DEFINE_integer("max_predictions_per_seq", 80,
                      "Maximum number of masked LM predictions per sequence.")
 
 flags.DEFINE_integer("random_seed", 12345, "Random seed for data generation.")
+
+flags.DEFINE_integer("num_processes", 63, "Number of processes")
 
 flags.DEFINE_integer(
     "dupe_factor", 10,
@@ -159,7 +159,7 @@ def create_float_feature(values):
     return feature
 
 
-def create_training_instances(input_files, tokenizer, max_seq_length,
+def create_training_instances(input_file, tokenizer, max_seq_length,
                               dupe_factor, masked_lm_prob,
                               max_predictions_per_seq, rng):
     """Create `TrainingInstance`s from raw text."""
@@ -168,27 +168,26 @@ def create_training_instances(input_files, tokenizer, max_seq_length,
     # Input file format:
     # (1) <doc> starts a new wiki document and </doc> ends it
     # (2) One sentence/paragraph per line.
-    for input_file in input_files:
-        with tf.gfile.GFile(input_file, "r") as reader:
-            expect_title = False
-            for i, line in enumerate(reader):
-                line = tokenization.convert_to_unicode(line).strip()
+    with tf.gfile.GFile(input_file, "r") as reader:
+        expect_title = False
+        for i, line in enumerate(reader):
+            line = tokenization.convert_to_unicode(line).strip()
 
-                if (not line) or line.startswith("</doc"):
-                    continue
+            if (not line) or line.startswith("</doc"):
+                continue
 
-                if expect_title:
-                    expect_title = False
-                    continue
+            if expect_title:
+                expect_title = False
+                continue
 
-                # Starting a new document
-                if line.startswith("<doc"):
-                    all_documents.append([])
-                    expect_title = True
-                    continue
-                tokens = tokenizer.tokenize(line)
-                if tokens:
-                    all_documents[-1].append(tokens)
+            # Starting a new document
+            if line.startswith("<doc"):
+                all_documents.append([])
+                expect_title = True
+                continue
+            tokens = tokenizer.tokenize(line)
+            if tokens:
+                all_documents[-1].append(tokens)
 
     # Remove empty documents
     all_documents = [x for x in all_documents if x]
@@ -196,12 +195,12 @@ def create_training_instances(input_files, tokenizer, max_seq_length,
 
     vocab_words = list(tokenizer.vocab.keys())
     instances = []
-    for _ in range(dupe_factor):
+    for dupe_idx in range(dupe_factor):
         for document_index in range(len(all_documents)):
             instances.extend(
                 create_instances_from_document(
                     all_documents, document_index, max_seq_length,
-                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng))
+                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx))
 
     rng.shuffle(instances)
     return instances
@@ -222,7 +221,8 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
 
 
 def create_instances_from_document(
-        all_documents, document_index, max_seq_length, masked_lm_prob, max_predictions_per_seq, vocab_words, rng):
+        all_documents, document_index, max_seq_length, masked_lm_prob, max_predictions_per_seq, vocab_words, rng,
+        dupe_idx):
     """Creates `TrainingInstance`s for a single document."""
     document = all_documents[document_index]
 
@@ -232,10 +232,10 @@ def create_instances_from_document(
     instances = []
     current_chunk = []
     current_length = 0
-    for segment in document:
+    for i, segment in enumerate(document):
         segment_len = len(segment)
 
-        if current_length + segment_len > max_num_tokens:
+        if current_length + segment_len > max_num_tokens or i % len(document) == dupe_idx:
             if current_chunk:
                 instance = create_instance_from_context(current_chunk, masked_lm_prob,
                                                         max_predictions_per_seq, vocab_words, rng)
@@ -245,10 +245,10 @@ def create_instances_from_document(
             if segment_len > max_num_tokens:
                 # If this segment is too long, take the first max_num_tokens from this segment
                 segment = segment[:max_num_tokens]
-                instance = create_instance_from_context([segment], masked_lm_prob,
-                                                        max_predictions_per_seq, vocab_words, rng)
-                instances.append(instance)
-                continue
+                # instance = create_instance_from_context([segment], masked_lm_prob,
+                #                                         max_predictions_per_seq, vocab_words, rng)
+                # instances.append(instance)
+                # continue
 
         current_chunk.append(segment)
         current_length += len(segment)
@@ -341,8 +341,34 @@ def create_masked_lm_predictions(tokens, masked_lm_prob,
     return (output_tokens, masked_lm_positions, masked_lm_labels)
 
 
+def process_file(input_file, output_file, tokenizer, rng):
+    tf.logging.info(f"*** Started processing file {input_file} ***")
+
+    instances = create_training_instances(
+        input_file, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
+        FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
+        rng)
+
+    tf.logging.info(f"*** Finished processing file {input_file}, writing to output file {output_file} ***")
+
+    write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
+                                    FLAGS.max_predictions_per_seq, [output_file])
+
+    tf.logging.info(f"*** Finished writing to output file {output_file} ***")
+
+
+def get_output_file(input_file, output_dir):
+    path = os.path.normpath(input_file)
+    split = path.split(os.sep)
+    dir_and_file = split[-2:]
+    return os.path.join(output_dir, '_'.join(dir_and_file) + '.tfrecord')
+
+
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
+
+    assert not tf.io.gfile.exists(FLAGS.output_dir), "Output directory already exists"
+    tf.io.gfile.mkdir(FLAGS.output_dir)
 
     tokenizer = tokenization.FullTokenizer(
         vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
@@ -351,28 +377,30 @@ def main(_):
     for input_pattern in FLAGS.input_file.split(","):
         input_files.extend(tf.gfile.Glob(input_pattern))
 
-    tf.logging.info("*** Reading from input files ***")
-    for input_file in input_files:
-        tf.logging.info("  %s", input_file)
+    tf.logging.info(f"*** Reading from {len(input_files)} files ***")
 
     rng = random.Random(FLAGS.random_seed)
 
-    instances = create_training_instances(
-        input_files, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
-        FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
-        rng)
+    params = [(file, get_output_file(file, FLAGS.output_dir), tokenizer, rng) for file in input_files]
+    with Pool(FLAGS.num_processes if FLAGS.num_processes else None) as p:
+        p.starmap(process_file, params)
 
-    output_files = FLAGS.output_file.split(",")
-    tf.logging.info("*** Writing to output files ***")
-    for output_file in output_files:
-        tf.logging.info("  %s", output_file)
-
-    write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
-                                    FLAGS.max_predictions_per_seq, output_files)
+    # instances = create_training_instances(
+    #     input_files, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
+    #     FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
+    #     rng)
+    #
+    # output_files = FLAGS.output_file.split(",")
+    # tf.logging.info("*** Writing to output files ***")
+    # for output_file in output_files:
+    #     tf.logging.info("  %s", output_file)
+    #
+    # write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
+    #                                 FLAGS.max_predictions_per_seq, output_files)
 
 
 if __name__ == "__main__":
     flags.mark_flag_as_required("input_file")
-    flags.mark_flag_as_required("output_file")
+    flags.mark_flag_as_required("output_dir")
     flags.mark_flag_as_required("vocab_file")
     tf.app.run()
