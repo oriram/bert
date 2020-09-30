@@ -277,7 +277,7 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
                                                    masked_lm_prob)
         num_already_masked = len(masked_span_positions)
     else:
-        tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings = None, None, None, None, None
+        masked_span_positions, input_mask, span_label_beginnings, span_label_endings = None, None, None, None
         num_already_masked = 0
 
     if FLAGS.geometric_masking_p > 0:
