@@ -1,7 +1,7 @@
 python create_pretraining_data.py \
 --input_file=../data/wiki/text/*/*wiki* \
 --output_dir=gs://span-pretraining/data/recurring_tfrecords \
---vocab_file=bert-cased-vocab.txt \
+--vocab_file=vocabs/bert-cased-vocab.txt \
 --do_lower_case=False \
 --do_whole_word_mask=False \
 --max_seq_length=512 \
