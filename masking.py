@@ -92,7 +92,7 @@ def create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, 
         masked_lm_positions.append(p.index)
         masked_lm_labels.append(p.label)
 
-    return (output_tokens, masked_lm_positions, masked_lm_labels)
+    return output_tokens, masked_lm_positions, masked_lm_labels
 
 
 def create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq, num_already_masked,
@@ -158,7 +158,7 @@ def create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq
         masked_lm_positions.append(p.index)
         masked_lm_labels.append(p.label)
 
-    return (output_tokens, masked_lm_positions, masked_lm_labels)
+    return output_tokens, masked_lm_positions, masked_lm_labels
 
 
 def validate_ngram(tokens, start_index, length):

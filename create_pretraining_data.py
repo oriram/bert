@@ -281,14 +281,13 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
         num_already_masked = 0
 
     if FLAGS.geometric_masking_p > 0:
-
         tokens, masked_lm_positions, masked_lm_labels = \
             create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, lengths, num_already_masked,
                                                    max_predictions_per_seq, vocab_words, rng, input_mask)
     else:
         tokens, masked_lm_positions, masked_lm_labels = \
-            create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq, vocab_words, rng,
-                                         do_whole_word_mask=FLAGS.do_whole_word_mask)
+            create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq, num_already_masked,
+                                         vocab_words, rng, do_whole_word_mask=FLAGS.do_whole_word_mask)
 
     return TrainingInstance(tokens=tokens,
                             masked_lm_positions=masked_lm_positions,
@@ -317,8 +316,8 @@ def create_instances_from_document(
         if current_length + segment_len > max_num_tokens or (len(document) >= 10 and i % len(document) == dupe_idx):
             if current_chunk:
                 current_chunk.append(segment[:max_num_tokens-current_length])
-                instance = create_instance_from_context(current_chunk, masked_lm_prob,
-                                                        max_predictions_per_seq, vocab_words, rng, length_dist, lengths)
+                instance = create_instance_from_context(current_chunk, masked_lm_prob, max_predictions_per_seq,
+                                                        vocab_words, rng, length_dist, lengths)
                 instances.append(instance)
 
             current_chunk, current_length = [], 0
@@ -334,8 +333,8 @@ def create_instances_from_document(
         current_length += len(segment)
 
     if current_chunk:
-        instance = create_instance_from_context(current_chunk, masked_lm_prob,
-                                                max_predictions_per_seq, vocab_words, rng, length_dist, lengths)
+        instance = create_instance_from_context(current_chunk, masked_lm_prob, max_predictions_per_seq,
+                                                vocab_words, rng, length_dist, lengths)
         instances.append(instance)
 
     return instances
