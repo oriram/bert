@@ -24,6 +24,8 @@ import unicodedata
 import six
 import tensorflow as tf
 
+SPECIAL_TOKENS = {'[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]', '[SPAN_MASK]'}
+
 
 def validate_case_matches_checkpoint(do_lower_case, init_checkpoint):
   """Checks whether the casing config is consistent with the checkpoint name."""
