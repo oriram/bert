@@ -51,7 +51,7 @@ flags.DEFINE_bool(
     "Whether to use whole word masking rather than per-WordPiece masking.")
 
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
-flags.DEFINE_integer("max_recurring_predictions_per_seq", 40, "")
+flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
 
 flags.DEFINE_integer("max_seq_length", 512, "Maximum sequence length.")
 

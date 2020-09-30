@@ -47,27 +47,30 @@ flags.DEFINE_string(
     "Initial checkpoint (usually from a pre-trained BERT model).")
 
 flags.DEFINE_integer(
-    "max_seq_length", 128,
+    "max_seq_length", 512,
     "The maximum total input sequence length after WordPiece tokenization. "
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded. Must match data generation.")
 
 flags.DEFINE_integer(
-    "max_predictions_per_seq", 20,
+    "max_predictions_per_seq", 80,
     "Maximum number of masked LM predictions per sequence. "
     "Must match data generation.")
+
+flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
+flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
 
 flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
 flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
 
-flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
+flags.DEFINE_integer("train_batch_size", 256, "Total batch size for training.")
 
 flags.DEFINE_integer("eval_batch_size", 8, "Total batch size for eval.")
 
-flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
+flags.DEFINE_float("learning_rate", 1e-4, "The initial learning rate for Adam.")
 
-flags.DEFINE_integer("num_train_steps", 100000, "Number of training steps.")
+flags.DEFINE_integer("num_train_steps", 1000000, "Number of training steps.")
 
 flags.DEFINE_integer("num_warmup_steps", 10000, "Number of warmup steps.")
 
