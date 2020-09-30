@@ -24,7 +24,8 @@ import numpy as np
 import tokenization
 import tensorflow as tf
 
-from masking import create_geometric_masked_lm_predictions, create_masked_lm_predictions
+from masking import create_geometric_masked_lm_predictions, create_masked_lm_predictions, \
+    create_recurring_span_mask_predictions
 
 flags = tf.flags
 
@@ -50,6 +51,7 @@ flags.DEFINE_bool(
     "Whether to use whole word masking rather than per-WordPiece masking.")
 
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
+flags.DEFINE_integer("max_recurring_predictions_per_seq", 40, "")
 
 flags.DEFINE_integer("max_seq_length", 512, "Maximum sequence length.")
 
@@ -75,10 +77,16 @@ flags.DEFINE_bool("verbose", False, "verbose")
 class TrainingInstance(object):
     """A single training instance (sentence pair)."""
 
-    def __init__(self, tokens, masked_lm_positions, masked_lm_labels):
+    def __init__(self, tokens, masked_lm_positions, masked_lm_labels,
+                 masked_span_positions=None, masked_span_beginnings=None, masked_span_endings=None,
+                 input_mask=None):
         self.tokens = tokens
         self.masked_lm_positions = masked_lm_positions
         self.masked_lm_labels = masked_lm_labels
+        self.masked_span_positions = masked_span_positions
+        self.masked_span_beginnings = masked_span_beginnings
+        self.masked_span_endings = masked_span_endings
+        self.input_mask = input_mask
 
     def __str__(self):
         s = ""
@@ -88,6 +96,16 @@ class TrainingInstance(object):
             [str(x) for x in self.masked_lm_positions]))
         s += "masked_lm_labels: %s\n" % (" ".join(
             [tokenization.printable_text(x) for x in self.masked_lm_labels]))
+        if self.masked_span_positions is not None:
+            s += "masked_span_positions: %s\n" % (" ".join(
+                [str(x) for x in self.masked_span_positions]))
+            s += "input_mask: %s\n" % (" ".join(
+                [str(x) for x in self.input_mask]))
+            s += "masked_span_beginnings: %s\n" % (" ".join(
+                [str(x) for x in self.masked_span_beginnings]))
+            s += "masked_span_endings: %s\n" % (" ".join(
+                [str(x) for x in self.masked_span_endings]))
+
         s += "\n"
         return s
 
@@ -96,7 +114,7 @@ class TrainingInstance(object):
 
 
 def write_instance_to_example_files(instances, tokenizer, max_seq_length,
-                                    max_predictions_per_seq, output_files):
+                                    max_predictions_per_seq, max_recurring_predictions_per_seq, output_files):
     """Create TF example files from `TrainingInstance`s."""
     writers = []
     for output_file in output_files:
@@ -110,8 +128,9 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         #     tf.logging.info(f"written {inst_index}")
         input_ids = tokenizer.convert_tokens_to_ids(instance.tokens)
         input_len = len(input_ids)
-        input_mask = [1] * input_len
+        input_mask = [1] * input_len if instance.input_mask is None else instance.input_mask
         assert input_len <= max_seq_length
+        assert input_len == len(input_mask)
 
         while len(input_ids) < max_seq_length:
             input_ids.append(0)
@@ -135,6 +154,23 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         features["masked_lm_positions"] = create_int_feature(masked_lm_positions)
         features["masked_lm_ids"] = create_int_feature(masked_lm_ids)
         features["masked_lm_weights"] = create_float_feature(masked_lm_weights)
+
+        if FLAGS.recurring_span_masking:
+            masked_span_positions = list(instance.masked_span_positions)
+            masked_span_beginnings = list(instance.masked_span_beginnings)
+            masked_span_endings = list(instance.masked_span_endings)
+            masked_span_weights = [1.0] * len(masked_span_positions)
+
+            while len(masked_span_positions) < max_recurring_predictions_per_seq:
+                masked_span_positions.append(0)
+                masked_span_beginnings.append(0)
+                masked_span_endings.append(0)
+                masked_span_weights.append(0.0)
+
+            features["masked_span_positions"] = create_int_feature(masked_span_positions)
+            features["masked_span_beginnings"] = create_int_feature(masked_span_beginnings)
+            features["masked_span_endings"] = create_int_feature(masked_span_endings)
+            features["masked_span_weights"] = create_float_feature(masked_span_weights)
 
         tf_example = tf.train.Example(features=tf.train.Features(feature=features))
 
@@ -233,10 +269,22 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
         tokens += segment
     tokens.append("[SEP]")
 
+    if FLAGS.recurring_span_masking:
+        tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings = \
+            create_recurring_span_mask_predictions(tokens,
+                                                   FLAGS.max_recurring_predictions_per_seq,
+                                                   FLAGS.max_span_length,
+                                                   masked_lm_prob)
+        num_already_masked = len(masked_span_positions)
+    else:
+        tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings = None, None, None, None, None
+        num_already_masked = 0
+
     if FLAGS.geometric_masking_p > 0:
+
         tokens, masked_lm_positions, masked_lm_labels = \
-            create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, lengths, [],
-                                                   max_predictions_per_seq, vocab_words, rng)
+            create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, lengths, num_already_masked,
+                                                   max_predictions_per_seq, vocab_words, rng, input_mask)
     else:
         tokens, masked_lm_positions, masked_lm_labels = \
             create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq, vocab_words, rng,
@@ -244,7 +292,11 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
 
     return TrainingInstance(tokens=tokens,
                             masked_lm_positions=masked_lm_positions,
-                            masked_lm_labels=masked_lm_labels)
+                            masked_lm_labels=masked_lm_labels,
+                            masked_span_positions=masked_span_positions,
+                            masked_span_beginnings=span_label_beginnings,
+                            masked_span_endings=span_label_endings,
+                            input_mask=input_mask)
 
 
 def create_instances_from_document(
@@ -300,7 +352,8 @@ def process_file(input_file, output_file, tokenizer, rng, length_dist=None, leng
     tf.logging.info(f"*** Finished processing file {input_file}, writing to output file {output_file} ***")
 
     write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
-                                    FLAGS.max_predictions_per_seq, [output_file])
+                                    FLAGS.max_predictions_per_seq, FLAGS.max_recurring_predictions_per_seq,
+                                    [output_file])
 
     tf.logging.info(f"*** Finished writing to output file {output_file} ***")
 
