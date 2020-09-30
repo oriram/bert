@@ -161,45 +161,81 @@ def create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq
     return output_tokens, masked_lm_positions, masked_lm_labels
 
 
+def get_candidate_span_clusters(tokens, max_span_length):
+    token_to_indices = defaultdict(list)
+    for i, token in enumerate(tokens):
+        token_to_indices[token].append(i)
+
+    recurring_spans = []
+    for token, indices in token_to_indices.items():
+        for i, idx1 in enumerate(indices):
+            for j in range(i + 1, len(indices)):
+                idx2 = indices[j]
+                assert idx1 < idx2
+
+                for length in range(1, max_span_length):
+                    if tokens[idx1 + length] != tokens[idx2 + length]:
+                        recurring_spans.append((idx1, idx2, length))
+                        break
+
+    spans_to_clusters = {}
+    spans_to_representatives = {}
+    for idx1, idx2, length in recurring_spans:
+        first_span, second_span = (idx1, idx1 + length - 1), (idx2, idx2 + length - 1)
+        if first_span in spans_to_representatives:
+            if second_span not in spans_to_representatives:
+                rep = spans_to_representatives[first_span]
+                cluster = spans_to_clusters[rep]
+                cluster.append(second_span)
+                spans_to_representatives[second_span] = rep
+        else:
+            cluster = [first_span, second_span]
+            spans_to_representatives[first_span] = first_span
+            spans_to_representatives[second_span] = first_span
+            spans_to_clusters[first_span] = cluster
+
+    recurring_spans = [cluster for cluster in spans_to_clusters.values()
+                       if validate_ngram(tokens, cluster[0][0], cluster[0][1] - cluster[0][0] + 1)]
+    return recurring_spans
+
+
 def validate_ngram(tokens, start_index, length):
     # If the vocab at the beginning of the span is a part-of-word (##), we don't want to consider this span.
     # if vocab_word_piece[token_ids[start_index]]:
     if tokens[start_index].startswith("##"):
-        return False, None
+        return False
 
     # If the token *after* this considered span is a part-of-word (##), we don't want to consider this span.
     if tokens[start_index + length].startswith("##"):
-        return False, None
+        return False
 
-    substring_tokens = tokens[start_index:start_index + length]
+    if any([(not tokens[idx].isalnum()) and (not tokens[idx].startswith("##")) for idx in range(start_index, start_index+length)]):
+        return False
 
     # We filter out n-grams that are all stopwords (e.g. "in the", "with my", ...)
-    if all([token.lower() in STOPWORDS for token in substring_tokens]):
-        return False, None
-
-    if not all([token.isalnum() or token.startswith("##") for token in substring_tokens]):
-        # TODO: Treat spans like " An American in Paris "       (that start and end in " symbol) differently
-        # TODO: Treat spans like H&O differently
-        # if vocab_alnum[token_ids[start_index]] ==  and vocab_alnum[token_ids[start_index + length - 1]]:
-        #   return True, substring_token_ids
-        return False, None
-
-    return True, substring_tokens
+    if any([tokens[idx].lower() not in STOPWORDS for idx in range(start_index, start_index+length)]):
+        return True
+    return False
 
 
-def find_recurring_ngrams(tokens, max_span_length):
+"""def find_recurring_ngrams(tokens, max_span_length):
     num_tokens = len(tokens)
     all_valid_substrings = defaultdict(list)
+    start_time = time.time()
     for l in range(1, max_span_length+1):
         for start_index in range(num_tokens-l):
             is_valid, substring_token_ids = validate_ngram(tokens, start_index=start_index, length=l)
             if is_valid:
                 all_valid_substrings[str(substring_token_ids)].append((start_index, start_index+l-1))
+    # tf.logging.info(f"Validating took {time.time() - start_time}")
 
+    start_time = time.time()
     ngrams = [(eval(ngram), spans) for ngram, spans in all_valid_substrings.items() if len(spans) > 1]
     # Decoding the spans back to string (i.e. ["United", "States"] --> "United States" )
     ngrams = [(' '.join(ngram), len(ngram), spans) for ngram, spans in ngrams]
+    # tf.logging.info(f"Decoding took {time.time() - start_time}")
 
+    start_time = time.time()
     # We remove any n-gram occurrence that is a substring of another recurring n-gram
     # Note that other occurrences of this n-gram may be valid though (assuming there at least 2)
     filtered_ngrams = []
@@ -216,7 +252,9 @@ def find_recurring_ngrams(tokens, max_span_length):
         if sum(spans_to_keep) > 1:
             new_spans = [span for i, span in enumerate(spans) if spans_to_keep[i]]
             filtered_ngrams.append(new_spans)
-    return filtered_ngrams
+    # tf.logging.info(f"Filtering took {time.time() - start_time}")
+
+    return filtered_ngrams"""
 
 
 def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, max_span_length, masked_lm_prob):
@@ -234,9 +272,9 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
     num_to_predict = min(max_recurring_predictions,
                          max(1, int(round(len(tokens) * masked_lm_prob))))
 
-    spans = find_recurring_ngrams(new_tokens, max_span_length)
-    for idx in np.random.permutation(range(len(spans))):
-        identical_spans = spans[idx]
+    span_clusters = get_candidate_span_clusters(tokens, max_span_length)
+    for idx in np.random.permutation(range(len(span_clusters))):
+        identical_spans = span_clusters[idx]
         # self._assert_and_return_identical(token_ids, identical_spans)
         num_occurrences = len(identical_spans)
 
