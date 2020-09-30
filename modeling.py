@@ -129,6 +129,7 @@ class BertModel(object):
                  input_ids,
                  input_mask=None,
                  use_one_hot_embeddings=False,
+                 use_input_mask_for_positions=False,
                  scope=None):
         """Constructor for BertModel.
 
@@ -172,6 +173,7 @@ class BertModel(object):
                 # Add positional embeddings, then layer normalize and perform dropout.
                 self.embedding_output = embedding_postprocessor(
                     input_tensor=self.embedding_output,
+                    input_mask=input_mask if use_input_mask_for_positions else None,
                     use_position_embeddings=True,
                     position_embedding_name="position_embeddings",
                     initializer_range=config.initializer_range,
@@ -411,6 +413,7 @@ def embedding_lookup(input_ids,
 
 
 def embedding_postprocessor(input_tensor,
+                            input_mask=None,
                             use_position_embeddings=True,
                             position_embedding_name="position_embeddings",
                             initializer_range=0.02,
@@ -421,6 +424,7 @@ def embedding_postprocessor(input_tensor,
     Args:
       input_tensor: float Tensor of shape [batch_size, seq_length,
         embedding_size].
+      input_mask: float Tensor of shape [batch_size, seq_length], we build the position embedding from this tensor
       use_position_embeddings: bool. Whether to add position embeddings for the
         position of each token in the sequence.
       position_embedding_name: string. The name of the embedding table variable
@@ -455,24 +459,31 @@ def embedding_postprocessor(input_tensor,
             # using a (long) sequence length `max_position_embeddings`. The actual
             # sequence length might be shorter than this, for faster training of
             # tasks that do not have long sequences.
-            #
-            # So `full_position_embeddings` is effectively an embedding table
-            # for position [0, 1, 2, ..., max_position_embeddings-1], and the current
-            # sequence has positions [0, 1, 2, ... seq_length-1], so we can just
-            # perform a slice.
-            position_embeddings = tf.slice(full_position_embeddings, [0, 0],
-                                           [seq_length, -1])
-            num_dims = len(output.shape.as_list())
 
-            # Only the last two dimensions are relevant (`seq_length` and `width`), so
-            # we broadcast among the first dimensions, which is typically just
-            # the batch size.
-            position_broadcast_shape = []
-            for _ in range(num_dims - 2):
-                position_broadcast_shape.append(1)
-            position_broadcast_shape.extend([seq_length, width])
-            position_embeddings = tf.reshape(position_embeddings,
-                                             position_broadcast_shape)
+            if input_mask is None:
+                # So `full_position_embeddings` is effectively an embedding table
+                # for position [0, 1, 2, ..., max_position_embeddings-1], and the current
+                # sequence has positions [0, 1, 2, ... seq_length-1], so we can just
+                # perform a slice.
+                position_embeddings = tf.slice(full_position_embeddings, [0, 0],
+                                               [seq_length, -1])
+                num_dims = len(output.shape.as_list())
+
+                # Only the last two dimensions are relevant (`seq_length` and `width`), so
+                # we broadcast among the first dimensions, which is typically just
+                # the batch size.
+                position_broadcast_shape = []
+                for _ in range(num_dims - 2):
+                    position_broadcast_shape.append(1)
+                position_broadcast_shape.extend([seq_length, width])
+                position_embeddings = tf.reshape(position_embeddings,
+                                                 position_broadcast_shape)
+            else:
+                positions = tf.cumsum(input_mask, axis=-1, exclusive=True)  # [batch_size, seq_length]
+                flat_positions = tf.reshape(positions, [-1])
+                position_embeddings = tf.gather(full_position_embeddings, flat_positions)  # [batch_size*seq_length, dim]
+                position_embeddings = tf.reshape(position_embeddings, get_shape_list(input_tensor))
+
             output += position_embeddings
 
     output = layer_norm_and_dropout(output, dropout_prob)
