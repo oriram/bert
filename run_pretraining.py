@@ -113,7 +113,7 @@ flags.DEFINE_integer(
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_tpu,
-                     use_one_hot_embeddings):
+                     use_one_hot_embeddings, recurring_span_masking):
     """Returns `model_fn` closure for TPUEstimator."""
 
     def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
@@ -136,14 +136,27 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             is_training=is_training,
             input_ids=input_ids,
             input_mask=input_mask,
-            use_one_hot_embeddings=use_one_hot_embeddings)
+            use_one_hot_embeddings=use_one_hot_embeddings,
+            use_input_mask_for_positions=recurring_span_masking
+        )
 
-        (masked_lm_loss,
-         masked_lm_example_loss, masked_lm_log_probs) = get_masked_lm_output(
+        masked_lm_loss,  masked_lm_example_loss, masked_lm_log_probs = get_masked_lm_output(
             bert_config, model.get_sequence_output(), model.get_embedding_table(),
             masked_lm_positions, masked_lm_ids, masked_lm_weights)
 
         total_loss = masked_lm_loss
+
+        if FLAGS.recurring_span_masking:
+            masked_span_positions = features["masked_span_positions"]
+            masked_span_beginnings = features["masked_span_beginnings"]
+            masked_span_endings = features["masked_span_endings"]
+            masked_span_weights = features["masked_span_weights"]
+
+            masked_span_loss, masked_span_example_loss = get_masked_span_output(
+                bert_config, model.get_sequence_output(), input_mask,
+                masked_span_positions, masked_span_beginnings, masked_span_endings, masked_span_weights)
+
+            total_loss += masked_span_loss
 
         tvars = tf.trainable_variables()
 
@@ -265,6 +278,108 @@ def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
     return (loss, per_example_loss, log_probs)
 
 
+def get_masked_span_output(bert_config, input_tensor, input_mask,  positions, start_labels, end_labels, label_weights):
+    """Get loss and log probs for the recurring span masking."""
+    sequence_shape = modeling.get_shape_list(input_tensor, expected_rank=3)
+    batch_size = sequence_shape[0]
+    seq_length = sequence_shape[1]
+    width = sequence_shape[2]
+    num_positions = modeling.get_shape_list(positions, expected_rank=2)[1]
+
+    query_tensor = gather_indexes(input_tensor, positions)  # [batch_size * num_positions, width]
+
+    with tf.variable_scope("cls/span_predictions"):
+        # We apply one more non-linear transformation before the output layer.
+        # This matrix is not used after pre-training.
+        with tf.variable_scope("query_start_transform"):
+            query_start_tensor = tf.layers.dense(
+                query_tensor,
+                units=bert_config.hidden_size,
+                activation=modeling.get_activation(bert_config.hidden_act),
+                kernel_initializer=modeling.create_initializer(
+                    bert_config.initializer_range))
+            query_start_tensor = modeling.layer_norm(query_start_tensor)
+
+        with tf.variable_scope("query_end_transform"):
+            query_end_tensor = tf.layers.dense(
+                query_tensor,
+                units=bert_config.hidden_size,
+                activation=modeling.get_activation(bert_config.hidden_act),
+                kernel_initializer=modeling.create_initializer(
+                    bert_config.initializer_range))
+            query_end_tensor = modeling.layer_norm(query_end_tensor)
+
+        with tf.variable_scope("start_transform"):
+            start_tensor = tf.layers.dense(
+                input_tensor,
+                units=bert_config.hidden_size,
+                activation=modeling.get_activation(bert_config.hidden_act),
+                kernel_initializer=modeling.create_initializer(
+                    bert_config.initializer_range))
+            start_tensor = modeling.layer_norm(start_tensor)
+
+        with tf.variable_scope("end_transform"):
+            end_tensor = tf.layers.dense(
+                input_tensor,
+                units=bert_config.hidden_size,
+                activation=modeling.get_activation(bert_config.hidden_act),
+                kernel_initializer=modeling.create_initializer(
+                    bert_config.initializer_range))
+            end_tensor = modeling.layer_norm(end_tensor)
+
+        start_classifier = tf.get_variable(
+            "start_classifier",
+            shape=[bert_config.hidden_size, bert_config.hidden_size],
+            initializer=modeling.create_initializer(
+                    bert_config.initializer_range))
+
+        end_classifier = tf.get_variable(
+            "end_classifier",
+            shape=[bert_config.hidden_size, bert_config.hidden_size],
+            initializer=modeling.create_initializer(
+                bert_config.initializer_range))
+
+        input_mask = tf.expand_dims(input_mask, axis=1)  # [batch_size, 1, seq_length]
+        adder = (1.0 - tf.cast(input_mask, tf.float32)) * -10000.0
+
+        temp = tf.matmul(query_start_tensor, start_classifier)  # [batch_size * num_positions, width]
+        temp = tf.reshape(temp, [batch_size, num_positions, width])  # [batch_size, num_positions, width]
+        start_tensor = tf.transpose(start_tensor, perm=[0, 2, 1])  # [batch_size, width, seq_length]
+        start_logits = tf.matmul(temp, start_tensor)  # [batch_size, num_positions, seq_length]
+        start_logits += adder
+        start_logits = tf.reshape(start_logits, [batch_size * num_positions, seq_length])
+
+        temp = tf.matmul(query_end_tensor, end_classifier)  # [batch_size * num_positions, width]
+        temp = tf.reshape(temp, [batch_size, num_positions, width])  # [batch_size, num_positions, width]
+        end_tensor = tf.transpose(end_tensor, perm=[0, 2, 1])  # [batch_size, width, seq_length]
+        end_logits = tf.matmul(temp, end_tensor)  # [batch_size, num_positions, seq_length]
+        end_logits += adder
+        end_logits = tf.reshape(end_logits, [batch_size * num_positions, seq_length])
+
+        label_weights = tf.reshape(label_weights, [-1])  # [batch_size * num_positions]
+
+        start_log_probs = tf.nn.log_softmax(start_logits, axis=-1) #  [batch_size * num_positions, seq_length]
+        start_labels = tf.reshape(start_labels, [-1])  # [batch_size * num_positions]
+        start_one_hot_labels = tf.one_hot(
+            start_labels, depth=seq_length, dtype=tf.float32)  # # [batch_size * num_positions, seq_length]
+
+        start_per_example_loss = -tf.reduce_sum(start_log_probs * start_one_hot_labels, axis=[-1])
+
+        end_log_probs = tf.nn.log_softmax(end_logits, axis=-1)  # [batch_size * num_positions, seq_length]
+        end_labels = tf.reshape(end_labels, [-1])  # [batch_size * num_positions]
+        end_one_hot_labels = tf.one_hot(
+            end_labels, depth=seq_length, dtype=tf.float32)  # # [batch_size * num_positions, seq_length]
+
+        end_per_example_loss = -tf.reduce_sum(end_log_probs * end_one_hot_labels, axis=[-1])
+
+        per_example_loss = (start_per_example_loss + end_per_example_loss) / 2
+        numerator = tf.reduce_sum(label_weights * per_example_loss)
+        denominator = tf.reduce_sum(label_weights) + 1e-5
+        loss = numerator / denominator
+
+    return loss, per_example_loss
+
+
 def gather_indexes(sequence_tensor, positions):
     """Gathers the vectors at the specific positions over a minibatch."""
     sequence_shape = modeling.get_shape_list(sequence_tensor, expected_rank=3)
@@ -273,17 +388,19 @@ def gather_indexes(sequence_tensor, positions):
     width = sequence_shape[2]
 
     flat_offsets = tf.reshape(
-        tf.range(0, batch_size, dtype=tf.int32) * seq_length, [-1, 1])
-    flat_positions = tf.reshape(positions + flat_offsets, [-1])
+        tf.range(0, batch_size, dtype=tf.int32) * seq_length, [-1, 1])  # [batch_size, 1]
+    flat_positions = tf.reshape(positions + flat_offsets, [-1])  # [batch_size * num_positions]
     flat_sequence_tensor = tf.reshape(sequence_tensor,
-                                      [batch_size * seq_length, width])
-    output_tensor = tf.gather(flat_sequence_tensor, flat_positions)
+                                      [batch_size * seq_length, width])  # [batch_size * seq_length, width]
+    output_tensor = tf.gather(flat_sequence_tensor, flat_positions)  # [batch_size * num_positions, width]
     return output_tensor
 
 
 def input_fn_builder(input_files,
                      max_seq_length,
                      max_predictions_per_seq,
+                     recurring_span_masking,
+                     max_recurring_predictions_per_seq,
                      is_training,
                      num_cpu_threads=4):
     """Creates an `input_fn` closure to be passed to TPUEstimator."""
@@ -304,6 +421,12 @@ def input_fn_builder(input_files,
             "masked_lm_weights":
                 tf.FixedLenFeature([max_predictions_per_seq], tf.float32),
         }
+
+        if recurring_span_masking:
+            name_to_features["masked_span_positions"] = tf.FixedLenFeature([max_recurring_predictions_per_seq], tf.int64)
+            name_to_features["masked_span_beginnings"] = tf.FixedLenFeature([max_recurring_predictions_per_seq], tf.int64)
+            name_to_features["masked_span_endings"] = tf.FixedLenFeature([max_recurring_predictions_per_seq], tf.int64)
+            name_to_features["masked_span_weights"] = tf.FixedLenFeature([max_recurring_predictions_per_seq], tf.float32)
 
         # For training, we want a lot of parallel reading and shuffling.
         # For eval, we want no shuffling and parallel reading doesn't matter.
@@ -401,7 +524,8 @@ def main(_):
         num_train_steps=FLAGS.num_train_steps,
         num_warmup_steps=FLAGS.num_warmup_steps,
         use_tpu=FLAGS.use_tpu,
-        use_one_hot_embeddings=FLAGS.use_tpu)
+        use_one_hot_embeddings=FLAGS.use_tpu,
+        recurring_span_masking=FLAGS.recurring_span_masking)
 
     # If TPU is not available, this will fall back to normal Estimator on CPU
     # or GPU.
@@ -419,6 +543,8 @@ def main(_):
             input_files=input_files,
             max_seq_length=FLAGS.max_seq_length,
             max_predictions_per_seq=FLAGS.max_predictions_per_seq,
+            recurring_span_masking=FLAGS.recurring_span_masking,
+            max_recurring_predictions_per_seq=FLAGS.max_recurring_predictions_per_seq,
             is_training=True)
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
 
@@ -430,6 +556,8 @@ def main(_):
             input_files=input_files,
             max_seq_length=FLAGS.max_seq_length,
             max_predictions_per_seq=FLAGS.max_predictions_per_seq,
+            recurring_span_masking=FLAGS.recurring_span_masking,
+            max_recurring_predictions_per_seq=FLAGS.max_recurring_predictions_per_seq,
             is_training=False)
 
         result = estimator.evaluate(
