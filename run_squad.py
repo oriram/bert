@@ -49,12 +49,8 @@ flags.DEFINE_string(
     "The output directory where the model checkpoints will be written.")
 
 ## Other parameters
-flags.DEFINE_string("train_file", None,
-                    "SQuAD json for training. E.g., train-v1.1.json")
-
-flags.DEFINE_string(
-    "predict_file", None,
-    "SQuAD json for predictions. E.g., dev-v1.1.json or test-v1.1.json")
+flags.DEFINE_string("data_dir", None,
+                    "SQuAD data directory")
 
 flags.DEFINE_string(
     "init_checkpoint", None,
@@ -310,7 +306,7 @@ def read_squad_examples(input_file, is_training):
 
 def convert_examples_to_features(examples, tokenizer, max_seq_length,
                                  doc_stride, max_query_length, is_training,
-                                 output_fn):
+                                 output_fn, verbose=True):
     """Loads a data file into a list of `InputBatch`s."""
 
     unique_id = 1000000000
@@ -429,7 +425,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                 start_position = 0
                 end_position = 0
 
-            if example_index < 20:
+            if verbose and example_index < 5:
                 tf.logging.info("*** Example ***")
                 tf.logging.info("unique_id: %s" % (unique_id))
                 tf.logging.info("example_index: %s" % (example_index))
@@ -1104,15 +1100,6 @@ def validate_flags_or_throw(bert_config):
     if not FLAGS.do_train and not FLAGS.do_predict:
         raise ValueError("At least one of `do_train` or `do_predict` must be True.")
 
-    if FLAGS.do_train:
-        if not FLAGS.train_file:
-            raise ValueError(
-                "If `do_train` is True, then `train_file` must be specified.")
-    if FLAGS.do_predict:
-        if not FLAGS.predict_file:
-            raise ValueError(
-                "If `do_predict` is True, then `predict_file` must be specified.")
-
     if FLAGS.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
             "Cannot use sequence length %d because the BERT model "
@@ -1156,9 +1143,24 @@ def main(_):
     train_examples = None
     num_train_steps = None
     num_warmup_steps = None
+
+    if FLAGS.version_2_with_negative:
+        # SQuAD 2
+        train_file = os.path.join(FLAGS.data_dir, 'train-v2.0.json')
+        train_file_record = os.path.join(FLAGS.data_dir, 'trainv2.0.tf_record')
+        predict_file = os.path.join(FLAGS.data_dir, 'dev-v2.0.json')
+        predict_file_record = os.path.join(FLAGS.data_dir, 'evalv2.0.tf_record')
+        expected_version = "2.0"
+    else:
+        train_file = os.path.join(FLAGS.data_dir, 'train-v1.1.json')
+        train_file_record = os.path.join(FLAGS.data_dir, 'trainv1.1.tf_record')
+        predict_file = os.path.join(FLAGS.data_dir, 'dev-v1.1.json')
+        predict_file_record = os.path.join(FLAGS.data_dir, 'evalv1.1.tf_record')
+        expected_version = "1.1"
+
     if FLAGS.do_train:
         train_examples = read_squad_examples(
-            input_file=FLAGS.train_file, is_training=True)
+            input_file=train_file, is_training=True)
         num_train_steps = int(
             len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
         num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
@@ -1189,28 +1191,28 @@ def main(_):
     if FLAGS.do_train:
         # We write to a temporary file to avoid storing very large constant tensors
         # in memory.
-        train_writer = FeatureWriter(
-            filename=os.path.join(FLAGS.output_dir, "train.tf_record"),
-            is_training=True)
-        convert_examples_to_features(
-            examples=train_examples,
-            tokenizer=tokenizer,
-            max_seq_length=FLAGS.max_seq_length,
-            doc_stride=FLAGS.doc_stride,
-            max_query_length=FLAGS.max_query_length,
-            is_training=True,
-            output_fn=train_writer.process_feature)
-        train_writer.close()
+        if not tf.gfile.Exists(train_file_record):
+            train_writer = FeatureWriter(
+                filename=train_file_record,
+                is_training=True)
+            convert_examples_to_features(
+                examples=train_examples,
+                tokenizer=tokenizer,
+                max_seq_length=FLAGS.max_seq_length,
+                doc_stride=FLAGS.doc_stride,
+                max_query_length=FLAGS.max_query_length,
+                is_training=True,
+                output_fn=train_writer.process_feature)
+            train_writer.close()
 
         tf.logging.info("***** Running training *****")
         tf.logging.info("  Num orig examples = %d", len(train_examples))
-        tf.logging.info("  Num split examples = %d", train_writer.num_features)
         tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
         tf.logging.info("  Num steps = %d", num_train_steps)
         del train_examples
 
         train_input_fn = input_fn_builder(
-            input_file=train_writer.filename,
+            input_file=train_file_record,
             seq_length=FLAGS.max_seq_length,
             is_training=True,
             drop_remainder=True)
@@ -1221,7 +1223,7 @@ def main(_):
             input_file=FLAGS.predict_file, is_training=False)
 
         eval_writer = FeatureWriter(
-            filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
+            filename=predict_file_record,
             is_training=False)
         eval_features = []
 
@@ -1236,7 +1238,8 @@ def main(_):
             doc_stride=FLAGS.doc_stride,
             max_query_length=FLAGS.max_query_length,
             is_training=False,
-            output_fn=append_feature)
+            output_fn=append_feature,
+            verbose=False)
         eval_writer.close()
 
         tf.logging.info("***** Running predictions *****")
@@ -1298,4 +1301,5 @@ if __name__ == "__main__":
     flags.mark_flag_as_required("vocab_file")
     flags.mark_flag_as_required("bert_config_file")
     flags.mark_flag_as_required("output_dir")
+    flags.mark_flag_as_required("data_dir")
     tf.app.run()
