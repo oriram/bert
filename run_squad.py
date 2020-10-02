@@ -29,6 +29,8 @@ import tokenization
 import six
 import tensorflow as tf
 
+import evaluate_v1_1
+
 flags = tf.flags
 
 FLAGS = flags.FLAGS
@@ -1274,6 +1276,22 @@ def main(_):
                           FLAGS.n_best_size, FLAGS.max_answer_length,
                           FLAGS.do_lower_case, output_prediction_file,
                           output_nbest_file, output_null_log_odds_file)
+
+        with tf.gfile.Open(predict_file, "r") as dataset_file:
+            dataset_json = json.load(dataset_file)
+            if dataset_json['version'] != expected_version:
+                tf.logging.error('Evaluation expects v-' + expected_version + ', but got dataset with v-' + dataset_json['version'])
+                exit()
+
+            dataset = dataset_json['data']
+        with tf.gfile.Open(output_prediction_file) as prediction_file:
+            predictions = json.load(prediction_file)
+
+        results_str = json.dumps(evaluate_v1_1.evaluate(dataset, predictions))
+        tf.logging.info("*** Results: ******")
+        tf.logging.info(results_str)
+        with tf.gfile.Open(os.path.join(FLAGS.output_dir, "results.json")) as results_file:
+            results_file.write(results_str)
 
 
 if __name__ == "__main__":
