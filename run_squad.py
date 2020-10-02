@@ -57,7 +57,7 @@ flags.DEFINE_string(
     "Initial checkpoint (usually from a pre-trained BERT model).")
 
 flags.DEFINE_bool(
-    "do_lower_case", True,
+    "do_lower_case", False,
     "Whether to lower case the input text. Should be True for uncased "
     "models and False for cased models.")
 
@@ -658,7 +658,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             total_loss = (start_loss + end_loss) / 2.0
 
             train_op = optimization.create_optimizer(
-                total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu, 0.0)
+                total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu, 1e-8, 0.0)
 
             output_spec = tf.contrib.tpu.TPUEstimatorSpec(
                 mode=mode,
