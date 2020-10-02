@@ -136,6 +136,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             is_training=is_training,
             input_ids=input_ids,
             input_mask=input_mask,
+            token_type_ids=None,
             use_one_hot_embeddings=use_one_hot_embeddings,
             use_input_mask_for_positions=recurring_span_masking
         )

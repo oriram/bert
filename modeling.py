@@ -41,6 +41,7 @@ class BertConfig(object):
                  hidden_dropout_prob=0.1,
                  attention_probs_dropout_prob=0.1,
                  max_position_embeddings=512,
+                 type_vocab_size=16,
                  initializer_range=0.02):
         """Constructs BertConfig.
 
@@ -73,6 +74,7 @@ class BertConfig(object):
         self.hidden_dropout_prob = hidden_dropout_prob
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.max_position_embeddings = max_position_embeddings
+        self.type_vocab_size = type_vocab_size
         self.initializer_range = initializer_range
 
     @classmethod
@@ -128,6 +130,7 @@ class BertModel(object):
                  is_training,
                  input_ids,
                  input_mask=None,
+                 token_type_ids=None,
                  use_one_hot_embeddings=False,
                  use_input_mask_for_positions=False,
                  scope=None):
@@ -171,9 +174,14 @@ class BertModel(object):
                     use_one_hot_embeddings=use_one_hot_embeddings)
 
                 # Add positional embeddings, then layer normalize and perform dropout.
+                use_token_type = (token_type_ids is not None)
                 self.embedding_output = embedding_postprocessor(
                     input_tensor=self.embedding_output,
                     input_mask=input_mask if use_input_mask_for_positions else None,
+                    use_token_type=use_token_type,
+                    token_type_ids=token_type_ids,
+                    token_type_vocab_size=config.type_vocab_size if use_token_type else 0,
+                    token_type_embedding_name="token_type_embeddings",
                     use_position_embeddings=True,
                     position_embedding_name="position_embeddings",
                     initializer_range=config.initializer_range,
@@ -414,6 +422,10 @@ def embedding_lookup(input_ids,
 
 def embedding_postprocessor(input_tensor,
                             input_mask=None,
+                            use_token_type=False,
+                            token_type_ids=None,
+                            token_type_vocab_size=16,
+                            token_type_embedding_name="token_type_embeddings",
                             use_position_embeddings=True,
                             position_embedding_name="position_embeddings",
                             initializer_range=0.02,
@@ -447,6 +459,23 @@ def embedding_postprocessor(input_tensor,
     width = input_shape[2]
 
     output = input_tensor
+
+    if use_token_type:
+        if token_type_ids is None:
+            raise ValueError("`token_type_ids` must be specified if"
+                             "`use_token_type` is True.")
+        token_type_table = tf.get_variable(
+            name=token_type_embedding_name,
+            shape=[token_type_vocab_size, width],
+            initializer=create_initializer(initializer_range))
+        # This vocab will be small so we always do one-hot here, since it is always
+        # faster for a small vocabulary.
+        flat_token_type_ids = tf.reshape(token_type_ids, [-1])
+        one_hot_ids = tf.one_hot(flat_token_type_ids, depth=token_type_vocab_size)
+        token_type_embeddings = tf.matmul(one_hot_ids, token_type_table)
+        token_type_embeddings = tf.reshape(token_type_embeddings,
+                                           [batch_size, seq_length, width])
+        output += token_type_embeddings
 
     if use_position_embeddings:
         assert_op = tf.assert_less_equal(seq_length, max_position_embeddings)
