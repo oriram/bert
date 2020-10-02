@@ -29,7 +29,7 @@ import tokenization
 import six
 import tensorflow as tf
 
-import evaluate_v1_1
+import evaluate_v1_1, evaluate_v2_0
 
 flags = tf.flags
 
@@ -1060,7 +1060,7 @@ class FeatureWriter(object):
         self.filename = filename
         self.is_training = is_training
         self.num_features = 0
-        self._writer = tf.python_io.TFRecordWriter(filename)
+        self._writer = tf.io.TFRecordWriter(filename)
 
     def process_feature(self, feature):
         """Write a InputFeature to the TFRecordWriter as a tf.train.Example."""
@@ -1191,7 +1191,7 @@ def main(_):
     if FLAGS.do_train:
         # We write to a temporary file to avoid storing very large constant tensors
         # in memory.
-        if not tf.gfile.Exists(train_file_record):
+        if not tf.io.gfile.exists(train_file_record):
             train_writer = FeatureWriter(
                 filename=train_file_record,
                 is_training=True)
@@ -1280,17 +1280,12 @@ def main(_):
                           FLAGS.do_lower_case, output_prediction_file,
                           output_nbest_file, output_null_log_odds_file)
 
-        with tf.gfile.Open(predict_file, "r") as dataset_file:
-            dataset_json = json.load(dataset_file)
-            if dataset_json['version'] != expected_version:
-                tf.logging.error('Evaluation expects v-' + expected_version + ', but got dataset with v-' + dataset_json['version'])
-                exit()
+        if FLAGS.version_2_with_negative:
+            results = evaluate_v2_0.evaluate(predict_file, output_prediction_file, output_null_log_odds_file)
+        else:
+            results = evaluate_v1_1.evaluate(predict_file, output_prediction_file)
 
-            dataset = dataset_json['data']
-        with tf.gfile.Open(output_prediction_file) as prediction_file:
-            predictions = json.load(prediction_file)
-
-        results_str = json.dumps(evaluate_v1_1.evaluate(dataset, predictions))
+        results_str = json.dumps(results)
         tf.logging.info("*** Results: ******")
         tf.logging.info(results_str)
         with tf.gfile.Open(os.path.join(FLAGS.output_dir, "results.json"), "w") as results_file:

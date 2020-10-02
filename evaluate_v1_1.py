@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 
+import tensorflow as tf
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -51,7 +52,18 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
     return max(scores_for_ground_truths)
 
 
-def evaluate(dataset, predictions):
+def evaluate(predict_file, output_prediction_file):
+    with tf.gfile.Open(predict_file, "r") as dataset_file:
+        dataset_json = json.load(dataset_file)
+        if dataset_json['version'] != "1.1":
+            tf.logging.error(
+                'Evaluation expects v-1.1, but got dataset with v-' + dataset_json['version'])
+            exit()
+
+        dataset = dataset_json['data']
+    with tf.gfile.Open(output_prediction_file) as prediction_file:
+        predictions = json.load(prediction_file)
+
     f1 = exact_match = total = 0
     for article in dataset:
         for paragraph in article['paragraphs']:
@@ -74,7 +86,7 @@ def evaluate(dataset, predictions):
 
     return {'exact_match': exact_match, 'f1': f1}
 
-
+"""
 if __name__ == '__main__':
     expected_version = '1.1'
     parser = argparse.ArgumentParser(
@@ -92,3 +104,4 @@ if __name__ == '__main__':
     with open(args.prediction_file) as prediction_file:
         predictions = json.load(prediction_file)
     print(json.dumps(evaluate(dataset, predictions)))
+"""
