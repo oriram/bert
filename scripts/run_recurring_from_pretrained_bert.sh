@@ -1,0 +1,19 @@
+python run_pretraining.py \
+--init_checkpoint=gs://span-prtraining/bert_base_cased/bert_model.ckpt \
+--bert_config_file=configs/bert-base-cased-config.json \
+--input_file=gs://span-pretraining/data/recurring_tfrecords/* \
+--output_dir=gs://span-pretraining/model_outputs/recurring_pretrained_bert \
+--max_seq_length=512 \
+--max_predictions_per_seq=60 \
+--recurring_span_masking=True \
+--max_recurring_predictions_per_seq=30 \
+--do_train \
+--train_batch_size=256 \
+--learning_rate=1e-4 \
+--num_train_steps=400000 \
+--num_warmup_steps=10000 \
+--save_checkpoints_steps=10000 \
+--keep_checkpoint_max=40 \
+--use_tpu \
+--num_tpu_cores=8 \
+--tpu_name=node-v3-8-tf4
