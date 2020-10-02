@@ -1,5 +1,5 @@
 python run_pretraining.py \
---init_checkpoint=gs://span-prtraining/bert_base_cased/bert_model.ckpt \
+--init_checkpoint=gs://span-pretraining/bert_base_cased/bert_model.ckpt \
 --bert_config_file=configs/bert-base-cased-config.json \
 --input_file=gs://span-pretraining/data/recurring_tfrecords/* \
 --output_dir=gs://span-pretraining/model_outputs/recurring_pretrained_bert \
