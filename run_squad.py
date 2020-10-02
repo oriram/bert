@@ -1220,7 +1220,7 @@ def main(_):
 
     if FLAGS.do_predict:
         eval_examples = read_squad_examples(
-            input_file=FLAGS.predict_file, is_training=False)
+            input_file=predict_file, is_training=False)
 
         eval_writer = FeatureWriter(
             filename=predict_file_record,
