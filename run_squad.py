@@ -1293,7 +1293,7 @@ def main(_):
         results_str = json.dumps(evaluate_v1_1.evaluate(dataset, predictions))
         tf.logging.info("*** Results: ******")
         tf.logging.info(results_str)
-        with tf.gfile.Open(os.path.join(FLAGS.output_dir, "results.json")) as results_file:
+        with tf.gfile.Open(os.path.join(FLAGS.output_dir, "results.json"), "w") as results_file:
             results_file.write(results_str)
 
 
