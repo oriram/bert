@@ -217,30 +217,40 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
     """Create `TrainingInstance`s from raw text."""
     all_documents = [[]]
 
-    # Input file format:
+    # Wiki Input file format:
     # (1) <doc> starts a new wiki document and </doc> ends it
     # (2) One sentence/paragraph per line.
+    # BookCorpus file format:
+    # Empty line starts a new book
+    wiki_format = ("wiki" in input_file)
     with tf.gfile.GFile(input_file, "r") as reader:
         expect_title = False
         for i, line in enumerate(reader):
             # if i % 1000 == 0:
             #     tf.logging.info(f"read {i}")
+            if wiki_format:
+                line = tokenization.convert_to_unicode(line).strip()
 
-            line = tokenization.convert_to_unicode(line).strip()
+                if (not line) or line.startswith("</doc"):
+                    continue
 
-            if (not line) or line.startswith("</doc"):
-                continue
+                if expect_title:
+                    expect_title = False
+                    continue
 
-            if expect_title:
-                expect_title = False
-                continue
+                # Starting a new document
+                if line.startswith("<doc"):
+                    all_documents.append([])
+                    expect_title = True
+                    continue
+                tokens = tokenizer.tokenize(line)
+            else:
+                line = line.strip()
+                if not line:
+                    all_documents.append([])
+                    continue
+                tokens = line.split()
 
-            # Starting a new document
-            if line.startswith("<doc"):
-                all_documents.append([])
-                expect_title = True
-                continue
-            tokens = tokenizer.tokenize(line)
             if tokens:
                 all_documents[-1].append(tokens)
 
