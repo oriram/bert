@@ -228,9 +228,9 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
         for i, line in enumerate(reader):
             # if i % 1000 == 0:
             #     tf.logging.info(f"read {i}")
-            if wiki_format:
-                line = tokenization.convert_to_unicode(line).strip()
 
+            line = tokenization.convert_to_unicode(line).strip()
+            if wiki_format:
                 if (not line) or line.startswith("</doc"):
                     continue
 
@@ -243,14 +243,13 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
                     all_documents.append([])
                     expect_title = True
                     continue
-                tokens = tokenizer.tokenize(line)
             else:
-                line = line.strip()
                 if not line:
                     all_documents.append([])
                     continue
-                tokens = line.split()
+                line = line.replace('…', "...").replace('’', "'").replace('“', '"').replace('–', "-").replace('—', "-").replace('”', '"').replace('‘', "'")
 
+            tokens = tokenizer.tokenize(line)
             if tokens:
                 all_documents[-1].append(tokens)
 
