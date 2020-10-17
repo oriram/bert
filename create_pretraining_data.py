@@ -243,13 +243,21 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
                     all_documents.append([])
                     expect_title = True
                     continue
+
+                tokens = tokenizer.tokenize(line)
+
             else:
                 if not line:
                     all_documents.append([])
                     continue
                 line = line.replace('…', "...").replace('’', "'").replace('“', '"').replace('–', "-").replace('—', "-").replace('”', '"').replace('‘', "'")
+                tokens = line.split()
+                new_tokens = list(tokens)
+                for i, t in enumerate(tokens):
+                    if t not in tokenizer.vocab:
+                        new_tokens[i] = "[UNK]"
+                tokens = new_tokens
 
-            tokens = tokenizer.tokenize(line)
             if tokens:
                 all_documents[-1].append(tokens)
 
