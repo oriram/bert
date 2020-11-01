@@ -52,6 +52,7 @@ flags.DEFINE_bool(
 
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
 flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
+flags.DEFINE_float("unanswerable_prob", 0.0, "The probability to choose unanswerable for a given cluster")
 
 flags.DEFINE_integer("max_seq_length", 512, "Maximum sequence length.")
 
@@ -291,7 +292,8 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
             create_recurring_span_mask_predictions(tokens,
                                                    FLAGS.max_recurring_predictions_per_seq,
                                                    FLAGS.max_span_length,
-                                                   masked_lm_prob)
+                                                   masked_lm_prob,
+                                                   FLAGS.unanswerable_prob)
         num_already_masked = len(masked_span_positions)
     else:
         masked_span_positions, input_mask, span_label_beginnings, span_label_endings = None, None, None, None

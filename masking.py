@@ -257,7 +257,8 @@ def validate_ngram(tokens, start_index, length):
     return filtered_ngrams"""
 
 
-def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, max_span_length, masked_lm_prob):
+def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, max_span_length, masked_lm_prob,
+                                           unanswerable_prob=0.0):
     masked_spans = []
     num_predictions = 0
     input_mask = [1] * len(tokens)
@@ -279,11 +280,17 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
         num_occurrences = len(identical_spans)
 
         # Choosing which span to leave unmasked:
-        unmasked_span_idx = np.random.randint(num_occurrences)
-        unmasked_span = identical_spans[unmasked_span_idx]
-        if any([already_masked_tokens[i] for i in _iterate_span_indices(unmasked_span)]):
-            # The same token can't be both masked for one pair and unmasked for another pair
-            continue
+        if np.random.random() < unanswerable_prob:
+            answerable = False
+            unmasked_span_idx = -1
+            unmasked_span = (0, 0)  # (0, 0) is the null span
+        else:
+            answerable = True
+            unmasked_span_idx = np.random.randint(num_occurrences)
+            unmasked_span = identical_spans[unmasked_span_idx]
+            if any([already_masked_tokens[i] for i in _iterate_span_indices(unmasked_span)]):
+                # The same token can't be both masked for one pair and unmasked for another pair
+                continue
 
         unmasked_span_beginning, unmasked_span_ending = unmasked_span
         for i, span in enumerate(identical_spans):
@@ -300,8 +307,8 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
                     # or alternatively masked twice
                     continue
 
-                if any([new_tokens[j] != new_tokens[k] for j, k in
-                        zip(_iterate_span_indices(span), _iterate_span_indices(unmasked_span))]):
+                if answerable and any([new_tokens[j] != new_tokens[k] for j, k in
+                                       zip(_iterate_span_indices(span), _iterate_span_indices(unmasked_span))]):
                     tf.logging.warning(
                         f"Two non-identical spans: unmasked {new_tokens[unmasked_span_beginning:unmasked_span_ending + 1]}, "
                         f"masked:{new_tokens[span[0]:span[1] + 1]}")
@@ -322,8 +329,9 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
                     is_first_token = False
                     already_masked_tokens[j] = True
 
-                for j in _iterate_span_indices(unmasked_span):
-                    span_label_tokens[j] = True
+                if answerable:
+                    for j in _iterate_span_indices(unmasked_span):
+                        span_label_tokens[j] = True
 
     assert len(masked_spans) <= num_to_predict
     masked_spans = sorted(masked_spans, key=lambda x: x.index)
