@@ -1,7 +1,7 @@
 python run_pretraining.py \
 --bert_config_file=configs/bert-base-cased-config.json \
 --input_file=gs://ori-span-pretraining/data/geometric_tfrecords/*,gs://ori-span-pretraining/data/geometric_bookcorpus_tfrecords/* \
---output_dir=gs://span-pretraining/model_outputs/geometric_wiki_bookcorpus \
+--output_dir=gs://ori-span-pretraining/model_outputs/geometric_wiki_bookcorpus \
 --max_seq_length=512 \
 --max_predictions_per_seq=80 \
 --do_train \
