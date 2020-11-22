@@ -1,7 +1,7 @@
 python create_pretraining_data.py \
 --input_file=../bookcorpus/split_books_*.train \
 --output_dir=gs://ori-span-pretraining/data/geometric_bookcorpus_tfrecords \
---vocab_file=bert-cased-vocab.txt \
+--vocab_file=vocabs/bert-cased-vocab.txt \
 --do_lower_case=False \
 --do_whole_word_mask=False \
 --max_seq_length=512 \
