@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Create masked LM/next sentence masked_lm TF examples for BERT."""
-
+import functools
 import os
 import collections
 import random
+import time
 from multiprocessing import Pool
 
 import numpy as np
@@ -53,6 +54,8 @@ flags.DEFINE_bool(
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
 flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
 flags.DEFINE_float("unanswerable_prob", 0.0, "The probability to choose unanswerable for a given cluster")
+flags.DEFINE_bool("only_write_statistics", False, "If set to True, examples aren't written to ")
+flags.DEFINE_string("ngrams_file", None, "The file to write the n-gram statistics to")
 
 flags.DEFINE_integer("max_seq_length", 512, "Maximum sequence length.")
 
@@ -112,6 +115,12 @@ class TrainingInstance(object):
 
     def __repr__(self):
         return self.__str__()
+
+
+class DataStatistics:
+    def __init__(self):
+        self.num_contexts = 0
+        self.ngrams = collections.Counter()
 
 
 def write_instance_to_example_files(instances, tokenizer, max_seq_length,
@@ -212,9 +221,8 @@ def create_float_feature(values):
     return feature
 
 
-def create_training_instances(input_file, tokenizer, max_seq_length,
-                              dupe_factor, masked_lm_prob,
-                              max_predictions_per_seq, rng, length_dist=None, lengths=None):
+def create_training_instances(input_file, tokenizer, max_seq_length, dupe_factor, masked_lm_prob,
+                              max_predictions_per_seq, rng, length_dist=None, lengths=None, statistics=None):
     """Create `TrainingInstance`s from raw text."""
     all_documents = [[]]
 
@@ -275,25 +283,26 @@ def create_training_instances(input_file, tokenizer, max_seq_length,
             instances.extend(
                 create_instances_from_document(
                     all_documents, document_index, max_seq_length,
-                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx, length_dist, lengths))
+                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx, length_dist, lengths, statistics))
 
     rng.shuffle(instances)
     return instances
 
 
-def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_seq, vocab_words, rng, length_dist=None, lengths=None):
+def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_seq, vocab_words, rng, length_dist=None, lengths=None, statistics=None):
     tokens = ["[CLS]"]
     for segment in segments:
         tokens += segment
     tokens.append("[SEP]")
 
     if FLAGS.recurring_span_masking:
-        tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings = \
+        tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings, span_clusters = \
             create_recurring_span_mask_predictions(tokens,
                                                    FLAGS.max_recurring_predictions_per_seq,
                                                    FLAGS.max_span_length,
                                                    masked_lm_prob,
                                                    FLAGS.unanswerable_prob)
+        statistics.ngrams.update([cluster[1] for cluster in span_clusters])
         num_already_masked = len(masked_span_positions)
     else:
         masked_span_positions, input_mask, span_label_beginnings, span_label_endings = None, None, None, None
@@ -308,6 +317,8 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
             create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq, num_already_masked,
                                          vocab_words, rng, do_whole_word_mask=FLAGS.do_whole_word_mask)
 
+    statistics.num_contexts += 1
+
     return TrainingInstance(tokens=tokens,
                             masked_lm_positions=masked_lm_positions,
                             masked_lm_labels=masked_lm_labels,
@@ -319,7 +330,7 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
 
 def create_instances_from_document(
         all_documents, document_index, max_seq_length, masked_lm_prob, max_predictions_per_seq, vocab_words, rng,
-        dupe_idx, length_dist=None, lengths=None):
+        dupe_idx, length_dist=None, lengths=None, statistics=None):
     """Creates `TrainingInstance`s for a single document."""
     document = all_documents[document_index]
 
@@ -336,7 +347,7 @@ def create_instances_from_document(
             if current_chunk:
                 current_chunk.append(segment[:max_num_tokens-current_length])
                 instance = create_instance_from_context(current_chunk, masked_lm_prob, max_predictions_per_seq,
-                                                        vocab_words, rng, length_dist, lengths)
+                                                        vocab_words, rng, length_dist, lengths, statistics)
                 instances.append(instance)
 
             current_chunk, current_length = [], 0
@@ -353,7 +364,7 @@ def create_instances_from_document(
 
     if current_chunk:
         instance = create_instance_from_context(current_chunk, masked_lm_prob, max_predictions_per_seq,
-                                                vocab_words, rng, length_dist, lengths)
+                                                vocab_words, rng, length_dist, lengths, statistics)
         instances.append(instance)
 
     return instances
@@ -362,18 +373,26 @@ def create_instances_from_document(
 def process_file(input_file, output_file, tokenizer, rng, length_dist=None, lengths=None):
     tf.logging.info(f"*** Started processing file {input_file} ***")
 
+    statistics = DataStatistics()
+
     instances = create_training_instances(
         input_file, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
         FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
-        rng, length_dist, lengths)
+        rng, length_dist, lengths, statistics)
 
-    tf.logging.info(f"*** Finished processing file {input_file}, writing to output file {output_file} ***")
+    if FLAGS.only_write_statistics:
+        tf.logging.info(f"*** Finished processing {statistics.num_contexts} contexts from file {input_file}")
+        return statistics
+
+    tf.logging.info(f"*** Finished processing {statistics.num_contexts} contexts from file {input_file}, "
+                    f"writing to output file {output_file} ***")
 
     write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
                                     FLAGS.max_predictions_per_seq, FLAGS.max_recurring_predictions_per_seq,
                                     [output_file])
 
     tf.logging.info(f"*** Finished writing to output file {output_file} ***")
+    return statistics
 
 
 def get_output_file(input_file, output_dir):
@@ -386,8 +405,9 @@ def get_output_file(input_file, output_dir):
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
 
-    assert not tf.io.gfile.exists(FLAGS.output_dir), "Output directory already exists"
-    tf.io.gfile.mkdir(FLAGS.output_dir)
+    if not FLAGS.only_write_statistics:
+        assert not tf.io.gfile.exists(FLAGS.output_dir), "Output directory already exists"
+        tf.io.gfile.mkdir(FLAGS.output_dir)
 
     tokenizer = tokenization.FullTokenizer(
         vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
@@ -411,20 +431,22 @@ def main(_):
     params = [(file, get_output_file(file, FLAGS.output_dir), tokenizer, rng, length_dist, lengths)
               for file in input_files]
     with Pool(FLAGS.num_processes if FLAGS.num_processes else None) as p:
-        p.starmap(process_file, params)
+        results = p.starmap(process_file, params)
 
-    # instances = create_training_instances(
-    #     input_files, tokenizer, FLAGS.max_seq_length, FLAGS.dupe_factor,
-    #     FLAGS.masked_lm_prob, FLAGS.max_predictions_per_seq,
-    #     rng)
-    #
-    # output_files = FLAGS.output_file.split(",")
-    # tf.logging.info("*** Writing to output files ***")
-    # for output_file in output_files:
-    #     tf.logging.info("  %s", output_file)
-    #
-    # write_instance_to_example_files(instances, tokenizer, FLAGS.max_seq_length,
-    #                                 FLAGS.max_predictions_per_seq, output_files)
+    total_num_contexts = sum([res.num_contexts for res in results])
+
+    if FLAGS.only_write_statistics:
+        tf.logging.info("Aggregating statistics..")
+        ngrams = functools.reduce(lambda x, y: x + y, [res.ngrams for res in results])
+        ngrams = collections.Counter({" ".join(tokens): num for tokens, num in ngrams.items()}).most_common()
+        tf.logging.info(f"100 most common ngrams: {ngrams[:100]}")
+
+        with tf.gfile.GFile(FLAGS.ngrams_file, "w") as writer:
+            for ngram, num in ngrams:
+                writer.write(f"{ngram}\t{num}\n")
+        tf.logging.info(f"Number of unique n-grams: {len(ngrams)}")
+
+    tf.logging.info(f"Done! Total number of contexts: {total_num_contexts}")
 
 
 if __name__ == "__main__":

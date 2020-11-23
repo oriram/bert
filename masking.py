@@ -274,8 +274,9 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
                          max(1, int(round(len(tokens) * masked_lm_prob))))
 
     span_clusters = get_candidate_span_clusters(tokens, max_span_length)
+    span_clusters = [(cluster, tuple(tokens[cluster[0][0]:cluster[0][1]+1])) for cluster in span_clusters]
     for idx in np.random.permutation(range(len(span_clusters))):
-        identical_spans = span_clusters[idx]
+        identical_spans = span_clusters[idx][0]
         # self._assert_and_return_identical(token_ids, identical_spans)
         num_occurrences = len(identical_spans)
 
@@ -344,7 +345,7 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
         span_label_beginnings.append(p.begin_label)
         span_label_endings.append(p.end_label)
 
-    return new_tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings
+    return new_tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings, span_clusters
 
 
 
