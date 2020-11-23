@@ -1,3 +1,4 @@
+import time
 from collections import namedtuple, defaultdict
 import numpy as np
 import tensorflow as tf
@@ -218,47 +219,28 @@ def validate_ngram(tokens, start_index, length):
     return False
 
 
-"""def find_recurring_ngrams(tokens, max_span_length):
-    num_tokens = len(tokens)
-    all_valid_substrings = defaultdict(list)
-    start_time = time.time()
-    for l in range(1, max_span_length+1):
-        for start_index in range(num_tokens-l):
-            is_valid, substring_token_ids = validate_ngram(tokens, start_index=start_index, length=l)
-            if is_valid:
-                all_valid_substrings[str(substring_token_ids)].append((start_index, start_index+l-1))
-    # tf.logging.info(f"Validating took {time.time() - start_time}")
+def get_candidate_single_span_clusters_by_ngram_statistics(tokens, max_span_length, ngram_stats, span_clusters):
+    tokens_to_ignore = [False] * len(tokens)
+    for span_cluster in span_clusters:
+        for span_start, span_end in span_cluster:
+            for i in range(span_start, span_end+1):
+                tokens_to_ignore[i] = True
 
-    start_time = time.time()
-    ngrams = [(eval(ngram), spans) for ngram, spans in all_valid_substrings.items() if len(spans) > 1]
-    # Decoding the spans back to string (i.e. ["United", "States"] --> "United States" )
-    ngrams = [(' '.join(ngram), len(ngram), spans) for ngram, spans in ngrams]
-    # tf.logging.info(f"Decoding took {time.time() - start_time}")
+    single_span_clusters = []
+    for start_idx in range(len(tokens)):
+        for length in range(1, max_span_length+1):
+            if start_idx + length > len(tokens) or tokens_to_ignore[start_idx + length - 1]:
+                break
 
-    start_time = time.time()
-    # We remove any n-gram occurrence that is a substring of another recurring n-gram
-    # Note that other occurrences of this n-gram may be valid though (assuming there at least 2)
-    filtered_ngrams = []
-    for ngram, length, spans in ngrams:
-        spans_to_keep = [True] * len(spans)
-        for other_ngram, _, other_spans in ngrams:
-            if ngram != other_ngram and ngram in other_ngram:
-                for i, span in enumerate(spans):
-                    for other_span in other_spans:
-                        if span[0] >= other_span[0] and span[1] <= other_span[1]:
-                            spans_to_keep[i] = False
+            span_tokens = tokens[start_idx:start_idx + length]
+            if span_tokens in ngram_stats:
+                single_span_clusters.append((start_idx, start_idx + length - 1))
 
-        # If we have more than one occurrence after the filtering:
-        if sum(spans_to_keep) > 1:
-            new_spans = [span for i, span in enumerate(spans) if spans_to_keep[i]]
-            filtered_ngrams.append(new_spans)
-    # tf.logging.info(f"Filtering took {time.time() - start_time}")
-
-    return filtered_ngrams"""
+    return single_span_clusters
 
 
 def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, max_span_length, masked_lm_prob,
-                                           unanswerable_prob=0.0):
+                                           unanswerable_prob=0.0, ngrams=None):
     masked_spans = []
     num_predictions = 0
     input_mask = [1] * len(tokens)
@@ -273,28 +255,61 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
     num_to_predict = min(max_recurring_predictions,
                          max(1, int(round(len(tokens) * masked_lm_prob))))
 
+    # start_time = time.time()
     span_clusters = get_candidate_span_clusters(tokens, max_span_length)
     span_clusters = [(cluster, tuple(tokens[cluster[0][0]:cluster[0][1]+1])) for cluster in span_clusters]
-    for idx in np.random.permutation(range(len(span_clusters))):
-        identical_spans = span_clusters[idx][0]
-        # self._assert_and_return_identical(token_ids, identical_spans)
-        num_occurrences = len(identical_spans)
+    # end_time = time.time()
+    # tf.logging.info(f"Finding recurrent ngrams took {end_time - start_time} seconds, {len(tokens)} tokens")
 
-        # Choosing which span to leave unmasked:
-        if np.random.random() < unanswerable_prob:
-            answerable = False
-            unmasked_span_idx = -1
-            unmasked_span = (0, 0)  # (0, 0) is the null span
-        else:
-            answerable = True
+    use_single_span_clusters = (ngrams is not None and unanswerable_prob > 0.0)
+    if use_single_span_clusters:
+        single_span_clusters = get_candidate_single_span_clusters_by_ngram_statistics(tokens, max_span_length,
+                                                                                      ngrams, span_clusters)
+        single_span_cluster_indices = np.random.permutation(range(len(single_span_clusters)))
+
+    span_cluster_indices = np.random.permutation(range(len(span_clusters)))
+    span_counter, single_span_counter = 0, 0
+    while span_counter < len(span_cluster_indices):
+        span_idx = span_cluster_indices[span_counter]
+        span_cluster = span_clusters[span_idx][0]
+        # self._assert_and_return_identical(token_ids, identical_spans)
+        num_occurrences = len(span_cluster)
+
+        answerable = (np.random.random() > unanswerable_prob)
+        if answerable:
             unmasked_span_idx = np.random.randint(num_occurrences)
-            unmasked_span = identical_spans[unmasked_span_idx]
+            unmasked_span = span_cluster[unmasked_span_idx]
+            span_counter += 1
             if any([already_masked_tokens[i] for i in _iterate_span_indices(unmasked_span)]):
                 # The same token can't be both masked for one pair and unmasked for another pair
                 continue
+        else:
+            if use_single_span_clusters:
+                success = True
+                while True:
+                    if single_span_counter >= len(single_span_cluster_indices):
+                        success = False
+                        break
+                    single_span_idx = single_span_cluster_indices[single_span_counter]
+                    single_span_counter += 1
+                    single_span = single_span_clusters[single_span_idx]
+                    valid = True
+                    for i in _iterate_span_indices(single_span):
+                        if already_masked_tokens[i] or span_label_tokens[i]:
+                            valid = False
+                            break
+                    if not valid:
+                        continue
+                    span_cluster = [single_span]
+                if not success: continue
+            else:
+                span_counter += 1
+
+            unmasked_span_idx = -1
+            unmasked_span = (0, 0)  # (0, 0) is the null span
 
         unmasked_span_beginning, unmasked_span_ending = unmasked_span
-        for i, span in enumerate(identical_spans):
+        for i, span in enumerate(span_cluster):
             if num_predictions >= num_to_predict:
                 # logger.warning(f"Already masked {self.max_predictions} spans.")
                 break
@@ -346,6 +361,3 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
         span_label_endings.append(p.end_label)
 
     return new_tokens, masked_span_positions, input_mask, span_label_beginnings, span_label_endings, span_clusters
-
-
-

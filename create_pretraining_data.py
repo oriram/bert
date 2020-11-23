@@ -53,6 +53,7 @@ flags.DEFINE_bool(
 
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
 flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
+flags.DEFINE_bool("single_span_clusters_by_corpus", False, "If set to True, use the ngram statistics to create single span clusters")
 flags.DEFINE_float("unanswerable_prob", 0.0, "The probability to choose unanswerable for a given cluster")
 flags.DEFINE_bool("only_write_statistics", False, "If set to True, examples aren't written to ")
 flags.DEFINE_string("ngrams_file", None, "The file to write the n-gram statistics to")
@@ -222,7 +223,7 @@ def create_float_feature(values):
 
 
 def create_training_instances(input_file, tokenizer, max_seq_length, dupe_factor, masked_lm_prob,
-                              max_predictions_per_seq, rng, length_dist=None, lengths=None, statistics=None):
+                              max_predictions_per_seq, rng, length_dist=None, lengths=None, statistics=None, ngrams=None):
     """Create `TrainingInstance`s from raw text."""
     all_documents = [[]]
 
@@ -283,13 +284,14 @@ def create_training_instances(input_file, tokenizer, max_seq_length, dupe_factor
             instances.extend(
                 create_instances_from_document(
                     all_documents, document_index, max_seq_length,
-                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx, length_dist, lengths, statistics))
+                    masked_lm_prob, max_predictions_per_seq, vocab_words, rng, dupe_idx,
+                    length_dist, lengths, statistics, ngrams))
 
     rng.shuffle(instances)
     return instances
 
 
-def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_seq, vocab_words, rng, length_dist=None, lengths=None, statistics=None):
+def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_seq, vocab_words, rng, length_dist=None, lengths=None, statistics=None, ngrams=None):
     tokens = ["[CLS]"]
     for segment in segments:
         tokens += segment
@@ -301,7 +303,8 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
                                                    FLAGS.max_recurring_predictions_per_seq,
                                                    FLAGS.max_span_length,
                                                    masked_lm_prob,
-                                                   FLAGS.unanswerable_prob)
+                                                   FLAGS.unanswerable_prob,
+                                                   ngrams)
         statistics.ngrams.update([cluster[1] for cluster in span_clusters])
         num_already_masked = len(masked_span_positions)
     else:
@@ -330,7 +333,7 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
 
 def create_instances_from_document(
         all_documents, document_index, max_seq_length, masked_lm_prob, max_predictions_per_seq, vocab_words, rng,
-        dupe_idx, length_dist=None, lengths=None, statistics=None):
+        dupe_idx, length_dist=None, lengths=None, statistics=None, ngrams=None):
     """Creates `TrainingInstance`s for a single document."""
     document = all_documents[document_index]
 
@@ -347,7 +350,7 @@ def create_instances_from_document(
             if current_chunk:
                 current_chunk.append(segment[:max_num_tokens-current_length])
                 instance = create_instance_from_context(current_chunk, masked_lm_prob, max_predictions_per_seq,
-                                                        vocab_words, rng, length_dist, lengths, statistics)
+                                                        vocab_words, rng, length_dist, lengths, statistics, ngrams)
                 instances.append(instance)
 
             current_chunk, current_length = [], 0
@@ -364,13 +367,13 @@ def create_instances_from_document(
 
     if current_chunk:
         instance = create_instance_from_context(current_chunk, masked_lm_prob, max_predictions_per_seq,
-                                                vocab_words, rng, length_dist, lengths, statistics)
+                                                vocab_words, rng, length_dist, lengths, statistics, ngrams)
         instances.append(instance)
 
     return instances
 
 
-def process_file(input_file, output_file, tokenizer, rng, length_dist=None, lengths=None):
+def process_file(input_file, output_file, tokenizer, rng, length_dist=None, lengths=None, ngrams=None):
     tf.logging.info(f"*** Started processing file {input_file} ***")
 
     statistics = DataStatistics()
@@ -428,7 +431,15 @@ def main(_):
         length_dist = [p * (1 - p) ** (i - lower) for i in range(lower, upper + 1)] if p >= 0 else None
         length_dist = [x / (sum(length_dist)) for x in length_dist]
 
-    params = [(file, get_output_file(file, FLAGS.output_dir), tokenizer, rng, length_dist, lengths)
+    ngrams = None
+    if FLAGS.single_span_clusters_by_corpus:
+        ngrams = {}
+        with tf.gfile.GFile(FLAGS.ngrams_file, "r") as reader:
+            for line in reader:
+                ngram, num = line.strip().split("\t")
+                ngrams[ngram] = num
+
+    params = [(file, get_output_file(file, FLAGS.output_dir), tokenizer, rng, length_dist, lengths, ngrams)
               for file in input_files]
     with Pool(FLAGS.num_processes if FLAGS.num_processes else None) as p:
         results = p.starmap(process_file, params)
