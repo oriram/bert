@@ -162,7 +162,7 @@ def create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq
     return output_tokens, masked_lm_positions, masked_lm_labels
 
 
-def get_candidate_span_clusters(tokens, max_span_length):
+def get_candidate_span_clusters(tokens, max_span_length, include_sub_clusters=False):
     token_to_indices = defaultdict(list)
     for i, token in enumerate(tokens):
         token_to_indices[token].append(i)
@@ -174,10 +174,16 @@ def get_candidate_span_clusters(tokens, max_span_length):
                 idx2 = indices[j]
                 assert idx1 < idx2
 
+                max_recurring_length = 1
                 for length in range(1, max_span_length):
-                    if tokens[idx1 + length] != tokens[idx2 + length]:
+                    if include_sub_clusters:
                         recurring_spans.append((idx1, idx2, length))
+                    if (idx2 + length) >= len(tokens) or tokens[idx1 + length] != tokens[idx2 + length]:
                         break
+                    max_recurring_length += 1
+
+                if max_recurring_length == max_span_length or not include_sub_clusters:
+                    recurring_spans.append((idx1, idx2, max_recurring_length))
 
     spans_to_clusters = {}
     spans_to_representatives = {}
@@ -207,7 +213,7 @@ def validate_ngram(tokens, start_index, length):
         return False
 
     # If the token *after* this considered span is a part-of-word (##), we don't want to consider this span.
-    if tokens[start_index + length].startswith("##"):
+    if (start_index + length) < len(tokens) and tokens[start_index + length].startswith("##"):
         return False
 
     if any([(not tokens[idx].isalnum()) and (not tokens[idx].startswith("##")) for idx in range(start_index, start_index+length)]):
