@@ -14,7 +14,7 @@ STOPWORDS = {'ourselves', 'hers', 'between', 'yourself', 'but', 'again', 'there'
              'in', 'will', 'on', 'does', 'yourselves', 'then', 'that', 'because', 'what', 'over', 'why', 'so', 'can',
              'did', 'not', 'now', 'under', 'he', 'you', 'herself', 'has', 'just', 'where', 'too', 'only', 'myself',
              'which', 'those', 'i', 'after', 'few', 'whom', 't', 'being', 'if', 'theirs', 'my', 'against', 'a', 'by',
-             'doing', 'it', 'how', 'further', 'was', 'here', 'than'}
+             'doing', 'it', 'how', 'further', 'was', 'here', 'than', 'also', 'could', 'would'}
 
 MaskedLmInstance = namedtuple("MaskedLmInstance",
                               ["index", "label"])
