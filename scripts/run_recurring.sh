@@ -1,7 +1,7 @@
 python run_pretraining.py \
 --bert_config_file=configs/bert-base-cased-config.json \
---input_file=gs://span-pretraining/data/recurring_tfrecords/* \
---output_dir=gs://span-pretraining/model_outputs/recurring \
+--input_file=gs://ori-span-pretraining/data/recurring_tfrecords_new/*.tfrecord \
+--output_dir=gs://ori-span-pretraining/model_outputs/recurring_new \
 --max_seq_length=512 \
 --max_predictions_per_seq=60 \
 --recurring_span_masking=True \
@@ -15,4 +15,4 @@ python run_pretraining.py \
 --keep_checkpoint_max=100 \
 --use_tpu \
 --num_tpu_cores=8 \
---tpu_name=node-v3-8-tf3
+--tpu_name=ori-tf
