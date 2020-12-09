@@ -162,7 +162,11 @@ def create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq
     return output_tokens, masked_lm_positions, masked_lm_labels
 
 
-def get_candidate_span_clusters(tokens, max_span_length, include_sub_clusters=False):
+def _iterate_span_indices(span):
+    return range(span[0], span[1] + 1)
+
+
+def get_candidate_span_clusters(tokens, max_span_length, include_sub_clusters=False, validate=True):
     token_to_indices = defaultdict(list)
     for i, token in enumerate(tokens):
         token_to_indices[token].append(i)
@@ -201,8 +205,11 @@ def get_candidate_span_clusters(tokens, max_span_length, include_sub_clusters=Fa
             spans_to_representatives[second_span] = first_span
             spans_to_clusters[first_span] = cluster
 
-    recurring_spans = [cluster for cluster in spans_to_clusters.values()
-                       if validate_ngram(tokens, cluster[0][0], cluster[0][1] - cluster[0][0] + 1)]
+    if validate:
+        recurring_spans = [cluster for cluster in spans_to_clusters.values()
+                           if validate_ngram(tokens, cluster[0][0], cluster[0][1] - cluster[0][0] + 1)]
+    else:
+        recurring_spans = spans_to_clusters.values()
     return recurring_spans
 
 
@@ -223,6 +230,28 @@ def validate_ngram(tokens, start_index, length):
     if any([tokens[idx].lower() not in STOPWORDS for idx in range(start_index, start_index+length)]):
         return True
     return False
+
+
+def get_span_clusters_by_length(span_clusters, seq_length):
+    already_taken = [False] * seq_length
+    span_clusters = sorted([(cluster, cluster[0][1] - cluster[0][0] + 1) for cluster in span_clusters],
+                           key=lambda x: x[1], reverse=True)
+    filtered_span_clusters = []
+    for span_cluster, _ in span_clusters:
+        unpruned_spans = []
+        for span in span_cluster:
+            if any((already_taken[i] for i in range(span[0], span[1]+1))):
+                continue
+            unpruned_spans.append(span)
+
+        # Validating that the cluster is indeed "recurring" after the pruning
+        if len(unpruned_spans) >= 2:
+            filtered_span_clusters.append(unpruned_spans)
+            for span in unpruned_spans:
+                for idx in _iterate_span_indices(span):
+                    already_taken[idx] = True
+
+    return filtered_span_clusters
 
 
 def get_candidate_single_span_clusters_by_ngram_statistics(tokens, max_span_length, ngram_stats, span_clusters):
@@ -255,14 +284,12 @@ def create_recurring_span_mask_predictions(tokens, max_recurring_predictions, ma
     already_masked_tokens = [False] * len(new_tokens)
     span_label_tokens = [False] * len(new_tokens)
 
-    def _iterate_span_indices(span):
-        return range(span[0], span[1] + 1)
-
     num_to_predict = min(max_recurring_predictions,
                          max(1, int(round(len(tokens) * masked_lm_prob))))
 
     # start_time = time.time()
-    span_clusters = get_candidate_span_clusters(tokens, max_span_length)
+    span_clusters = get_candidate_span_clusters(tokens, max_span_length, include_sub_clusters=True)
+    span_clusters = get_span_clusters_by_length(span_clusters, len(tokens))
     span_clusters = [(cluster, tuple(tokens[cluster[0][0]:cluster[0][1]+1])) for cluster in span_clusters]
     # end_time = time.time()
     # tf.logging.info(f"Finding recurrent ngrams took {end_time - start_time} seconds, {len(tokens)} tokens")
