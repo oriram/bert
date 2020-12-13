@@ -58,6 +58,7 @@ flags.DEFINE_integer(
     "Must match data generation.")
 
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
+flags.DEFINE_bool("only_recurring_span_masking", False, "If set to true, MLM is not applied")
 flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
 
 flags.DEFINE_bool("do_train", False, "Whether to run training.")
@@ -125,9 +126,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
         input_ids = features["input_ids"]
         input_mask = features["input_mask"]
-        masked_lm_positions = features["masked_lm_positions"]
-        masked_lm_ids = features["masked_lm_ids"]
-        masked_lm_weights = features["masked_lm_weights"]
 
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
@@ -141,11 +139,18 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             use_input_mask_for_positions=recurring_span_masking
         )
 
-        masked_lm_loss,  masked_lm_example_loss, masked_lm_log_probs = get_masked_lm_output(
-            bert_config, model.get_sequence_output(), model.get_embedding_table(),
-            masked_lm_positions, masked_lm_ids, masked_lm_weights)
+        total_loss = 0.0
 
-        total_loss = masked_lm_loss
+        if not FLAGS.only_recurring_span_masking:
+            masked_lm_positions = features["masked_lm_positions"]
+            masked_lm_ids = features["masked_lm_ids"]
+            masked_lm_weights = features["masked_lm_weights"]
+
+            masked_lm_loss,  masked_lm_example_loss, masked_lm_log_probs = get_masked_lm_output(
+                bert_config, model.get_sequence_output(), model.get_embedding_table(),
+                masked_lm_positions, masked_lm_ids, masked_lm_weights)
+
+            total_loss += masked_lm_loss
 
         if FLAGS.recurring_span_masking:
             masked_span_positions = features["masked_span_positions"]
