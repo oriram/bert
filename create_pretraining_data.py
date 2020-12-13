@@ -53,6 +53,7 @@ flags.DEFINE_bool(
 
 flags.DEFINE_bool("recurring_span_masking", False, "Whether to mask recurring spans")
 flags.DEFINE_integer("max_recurring_predictions_per_seq", 30, "")
+flags.DEFINE_bool("only_recurring_span_masking", False, "If set to True, we don't perform MLM")
 flags.DEFINE_bool("single_span_clusters_by_corpus", False, "If set to True, use the ngram statistics to create single span clusters")
 flags.DEFINE_float("unanswerable_prob", 0.0, "The probability to choose unanswerable for a given cluster")
 flags.DEFINE_bool("only_write_statistics", False, "If set to True, examples aren't written to ")
@@ -150,21 +151,23 @@ def write_instance_to_example_files(instances, tokenizer, max_seq_length,
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
 
-        masked_lm_positions = list(instance.masked_lm_positions)
-        masked_lm_ids = tokenizer.convert_tokens_to_ids(instance.masked_lm_labels)
-        masked_lm_weights = [1.0] * len(masked_lm_ids)
-
-        while len(masked_lm_positions) < max_predictions_per_seq:
-            masked_lm_positions.append(0)
-            masked_lm_ids.append(0)
-            masked_lm_weights.append(0.0)
-
         features = collections.OrderedDict()
         features["input_ids"] = create_int_feature(input_ids)
         features["input_mask"] = create_int_feature(input_mask)
-        features["masked_lm_positions"] = create_int_feature(masked_lm_positions)
-        features["masked_lm_ids"] = create_int_feature(masked_lm_ids)
-        features["masked_lm_weights"] = create_float_feature(masked_lm_weights)
+
+        if not FLAGS.only_recurring_span_masking:
+            masked_lm_positions = list(instance.masked_lm_positions)
+            masked_lm_ids = tokenizer.convert_tokens_to_ids(instance.masked_lm_labels)
+            masked_lm_weights = [1.0] * len(masked_lm_ids)
+
+            while len(masked_lm_positions) < max_predictions_per_seq:
+                masked_lm_positions.append(0)
+                masked_lm_ids.append(0)
+                masked_lm_weights.append(0.0)
+
+            features["masked_lm_positions"] = create_int_feature(masked_lm_positions)
+            features["masked_lm_ids"] = create_int_feature(masked_lm_ids)
+            features["masked_lm_weights"] = create_float_feature(masked_lm_weights)
 
         if FLAGS.recurring_span_masking:
             masked_span_positions = list(instance.masked_span_positions)
@@ -311,7 +314,9 @@ def create_instance_from_context(segments, masked_lm_prob, max_predictions_per_s
         masked_span_positions, input_mask, span_label_beginnings, span_label_endings = None, None, None, None
         num_already_masked = 0
 
-    if FLAGS.geometric_masking_p > 0:
+    if FLAGS.only_recurring_span_masking:
+        masked_lm_positions, masked_lm_labels = None, None
+    elif FLAGS.geometric_masking_p > 0:
         tokens, masked_lm_positions, masked_lm_labels = \
             create_geometric_masked_lm_predictions(tokens, masked_lm_prob, length_dist, lengths, num_already_masked,
                                                    max_predictions_per_seq, vocab_words, rng, input_mask)
