@@ -406,6 +406,7 @@ def input_fn_builder(input_files,
                      max_seq_length,
                      max_predictions_per_seq,
                      recurring_span_masking,
+                     only_recurring_span_masking,
                      max_recurring_predictions_per_seq,
                      is_training,
                      num_cpu_threads=4):
@@ -419,14 +420,13 @@ def input_fn_builder(input_files,
             "input_ids":
                 tf.FixedLenFeature([max_seq_length], tf.int64),
             "input_mask":
-                tf.FixedLenFeature([max_seq_length], tf.int64),
-            "masked_lm_positions":
-                tf.FixedLenFeature([max_predictions_per_seq], tf.int64),
-            "masked_lm_ids":
-                tf.FixedLenFeature([max_predictions_per_seq], tf.int64),
-            "masked_lm_weights":
-                tf.FixedLenFeature([max_predictions_per_seq], tf.float32),
+                tf.FixedLenFeature([max_seq_length], tf.int64)
         }
+
+        if not only_recurring_span_masking:
+            name_to_features["masked_lm_positions"] = tf.FixedLenFeature([max_predictions_per_seq], tf.int64)
+            name_to_features["masked_lm_ids"] = tf.FixedLenFeature([max_predictions_per_seq], tf.int64)
+            name_to_features["masked_lm_weights"] = tf.FixedLenFeature([max_predictions_per_seq], tf.float32)
 
         if recurring_span_masking:
             name_to_features["masked_span_positions"] = tf.FixedLenFeature([max_recurring_predictions_per_seq], tf.int64)
@@ -550,6 +550,7 @@ def main(_):
             max_seq_length=FLAGS.max_seq_length,
             max_predictions_per_seq=FLAGS.max_predictions_per_seq,
             recurring_span_masking=FLAGS.recurring_span_masking,
+            only_recurring_span_masking=FLAGS.only_recurring_span_masking,
             max_recurring_predictions_per_seq=FLAGS.max_recurring_predictions_per_seq,
             is_training=True)
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
@@ -563,6 +564,7 @@ def main(_):
             max_seq_length=FLAGS.max_seq_length,
             max_predictions_per_seq=FLAGS.max_predictions_per_seq,
             recurring_span_masking=FLAGS.recurring_span_masking,
+            only_recurring_span_masking=FLAGS.only_recurring_span_masking,
             max_recurring_predictions_per_seq=FLAGS.max_recurring_predictions_per_seq,
             is_training=False)
 
