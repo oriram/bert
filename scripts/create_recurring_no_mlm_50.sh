@@ -1,0 +1,14 @@
+python create_pretraining_data.py \
+--input_file=../wiki/enwiki/*/*wiki*,../bookcorpus/split_books_*.train \
+--output_dir=gs://span-pretraining-europe/data/only_recurring_50_tfrecords \
+--vocab_file=vocabs/bert-cased-vocab.txt \
+--do_lower_case=False \
+--do_whole_word_mask=False \
+--max_seq_length=512 \
+--num_processes=63 \
+--dupe_factor=5 \
+--max_span_length=10 \
+--recurring_span_masking=True \
+--only_recurring_span_masking=True \
+--max_recurring_predictions_per_seq=50 \
+--masked_lm_prob=0.15
