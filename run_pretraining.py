@@ -22,6 +22,7 @@ import os
 import modeling
 import optimization
 import tensorflow as tf
+import wandb
 
 flags = tf.flags
 
@@ -110,6 +111,16 @@ tf.flags.DEFINE_string("master", None, "[Optional] TensorFlow master URL.")
 flags.DEFINE_integer(
     "num_tpu_cores", 8,
     "Only used if `use_tpu` is True. Total number of TPU cores to use.")
+
+flags.DEFINE_string(
+    "wandb_project", "splinter", "W&B project name"
+)
+flags.DEFINE_string(
+    "wandb_run_name", "splinter-base", "W&B project name"
+)
+flags.DEFINE_bool(
+    "use_wandb", True, "Whether to use W&B"
+)
 
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
@@ -553,7 +564,13 @@ def main(_):
             only_recurring_span_masking=FLAGS.only_recurring_span_masking,
             max_recurring_predictions_per_seq=FLAGS.max_recurring_predictions_per_seq,
             is_training=True)
-        estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
+        hooks = None
+        if FLAGS.use_wandb:
+            wandb_run = wandb.init(project=FLAGS.wandb_project, name=FLAGS.wandb_run_name, config=tf.FLAGS)
+            hooks = [wandb.tensorflow.WandbHook(steps_per_log=1000)]
+        estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps, hooks=hooks)
+        if FLAGS.use_wandb:
+            wandb_run.finish()
 
     if FLAGS.do_eval:
         tf.logging.info("***** Running evaluation *****")
