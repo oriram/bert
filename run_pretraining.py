@@ -566,7 +566,7 @@ def main(_):
             is_training=True)
         hooks = None
         if FLAGS.use_wandb:
-            wandb_run = wandb.init(project=FLAGS.wandb_project, name=FLAGS.wandb_run_name, config=tf.FLAGS)
+            wandb_run = wandb.init(project=FLAGS.wandb_project, name=FLAGS.wandb_run_name, config=FLAGS)
             hooks = [wandb.tensorflow.WandbHook(steps_per_log=1000)]
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps, hooks=hooks)
         if FLAGS.use_wandb:
