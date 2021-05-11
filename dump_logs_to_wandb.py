@@ -9,7 +9,8 @@ import wandb
 def parse_log_line(line):
     split = re.split(" ", line)
     loss = float(split[2].replace(",", ""))  # Remove ',' right after the loss value
-    step = int(split[-1])
+    step_index = split.index("step") + 2
+    step = int(split[step_index])
     return loss, step
 
 
