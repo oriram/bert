@@ -1,16 +1,15 @@
 import argparse
 import glob
 import os
+import re
 
 import wandb
 
 
 def parse_log_line(line):
-    split = line.split()
-    loss_index = split.index("loss") + 2
-    loss = float(split[loss_index].replace(",", ""))  # Remove ',' right after the loss value
-    step_index = split.index("step") + 2
-    step = int(split[step_index])
+    split = re.split(" ", line)
+    loss = float(split[2].replace(",", ""))  # Remove ',' right after the loss value
+    step = int(split[-1])
     return loss, step
 
 
@@ -35,7 +34,7 @@ if __name__ == '__main__':
             lines = f.readlines()
         for line in lines:
             line = line.strip()
-            if "loss" in line and "step" in line:
+            if line.startswith("INFO") and "loss" in line and "step" in line:
                 loss, step = parse_log_line(line)
                 run.log(data={"loss": loss}, step=step)
 
